@@ -1,0 +1,8 @@
+# words that should not count in competitive standard-word mode
+섯녘
+다름스타튬
+늠손가락
+는저가락
+늣저가락
+늦저가락
+늠밤통

@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+node_modules/
+opendict_key*.txt
+stdict_key*.txt
+*api_key*.txt
+data/stdict_api_fetch_state.json

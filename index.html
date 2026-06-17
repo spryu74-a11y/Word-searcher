@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>끝말잇기 한방 검색기</title>
+    <link
+      rel="preload"
+      href="./assets/fonts/NanumGothic.woff?v=20260613"
+      as="font"
+      type="font/woff"
+      crossorigin
+    />
+    <link rel="stylesheet" href="./styles.css?v=offline-text-search-20260617" />
+  </head>
+  <body>
+    <div class="discord-shell">
+      <aside class="guild-rail" aria-label="서버">
+        <button class="guild-icon guild-search selected" id="guildSearch" type="button" aria-label="검색기" title="검색기">
+          <img src="./assets/search-server.png?v=original-assets-20260617" alt="" />
+        </button>
+        <div class="guild-separator" aria-hidden="true"></div>
+        <button class="guild-icon guild-settings" id="guildSettings" type="button" data-focus-dictionary aria-label="설정" title="설정">
+          <img src="./assets/settings-server.png?v=original-assets-20260617" alt="" />
+        </button>
+      </aside>
+
+      <aside class="channel-sidebar" aria-label="채널">
+        <header class="server-header">
+          <strong>끝말잇기 치트서버</strong>
+          <span id="dictionaryState">단어장 로딩</span>
+        </header>
+
+        <nav class="channel-list">
+          <div class="channel-category">SEARCH</div>
+          <button class="channel-item active" type="button">
+            <span>#</span>
+            <strong>한방검색</strong>
+          </button>
+
+          <div class="channel-category">STATS</div>
+          <div class="stat-line">
+            <span>전체</span>
+            <strong id="statTotal">0</strong>
+          </div>
+          <div class="stat-line">
+            <span>한국어</span>
+            <strong id="statKo">0</strong>
+          </div>
+          <div class="stat-line">
+            <span>영어</span>
+            <strong id="statEn">0</strong>
+          </div>
+          <div class="stat-line danger">
+            <span>한방</span>
+            <strong id="statOneShot">0</strong>
+          </div>
+          <div class="stat-line warning">
+            <span>대체</span>
+            <strong id="statAlt">0</strong>
+          </div>
+        </nav>
+      </aside>
+
+      <main class="chat-view">
+        <header class="chat-header">
+          <div class="channel-title">
+            <span>#</span>
+            <h1>한방검색</h1>
+          </div>
+          <div class="header-actions">
+            <div class="header-status" id="buildState">인덱스 준비중</div>
+            <button
+              class="mobile-panel-button"
+              id="toggleDictionary"
+              type="button"
+              aria-expanded="false"
+              aria-controls="dictionaryPanel"
+            >
+              설정
+            </button>
+          </div>
+        </header>
+
+        <section class="info-bar" aria-live="polite">
+          <div>
+            <span>읽기</span>
+            <strong id="readingPreview">-</strong>
+          </div>
+          <div>
+            <span>허용 시작</span>
+            <strong id="allowedPreview">-</strong>
+          </div>
+          <div>
+            <span>제외</span>
+            <strong id="invalidPreview">0</strong>
+          </div>
+        </section>
+
+        <footer class="composer">
+          <label class="composer-input" for="queryInput">
+            <input
+              id="queryInput"
+              type="search"
+              autocomplete="off"
+              autocapitalize="off"
+              enterkeyhint="search"
+              spellcheck="false"
+              placeholder="검색..."
+            />
+          </label>
+
+          <label class="check-pill one-shot-filter">
+            <input id="oneShotOnly" type="checkbox" />
+            <span>한방 우선</span>
+          </label>
+          <button class="send-button" id="searchButton" type="button">검색</button>
+        </footer>
+
+        <nav class="result-pager" id="resultPager" aria-label="검색 결과 페이지" hidden></nav>
+        <section class="message-list" id="resultList" aria-live="polite"></section>
+        <button class="back-to-top" id="backToTop" type="button" aria-label="맨 위로">
+          <span>맨 위로</span>
+        </button>
+      </main>
+
+      <button class="panel-backdrop" id="panelBackdrop" type="button" aria-label="단어장 닫기"></button>
+
+      <aside class="member-panel" id="dictionaryPanel" aria-label="설정">
+        <header class="member-header">
+          <button class="member-back-button" id="closeDictionary" type="button" aria-label="검색으로 돌아가기"></button>
+          <h2>설정</h2>
+          <span id="resultMeta">0개</span>
+        </header>
+
+        <section class="settings-search">
+          <label class="settings-search-input" for="settingsSearch">
+            <input id="settingsSearch" type="search" autocomplete="off" spellcheck="false" placeholder="설정 검색" />
+          </label>
+        </section>
+
+        <section class="settings-list">
+          <div class="settings-section" data-settings-text="검색 기준 시작 끝말 한방 우선">
+            <h3>검색</h3>
+            <label class="settings-row" for="settingsSourceMode">
+              <span>검색 기준</span>
+              <select id="settingsSourceMode">
+                <option value="starts">시작 글자</option>
+                <option value="reply">끝말 대응</option>
+              </select>
+            </label>
+            <label class="settings-row" for="settingsOneShotOnly">
+              <span>한방 우선</span>
+              <input id="settingsOneShotOnly" type="checkbox" />
+            </label>
+          </div>
+
+          <div class="settings-section" data-settings-text="사용됨 표시 언어">
+            <h3>앱</h3>
+            <label class="settings-row" for="settingsShowUsed">
+              <span>사용됨 표시</span>
+              <input id="settingsShowUsed" type="checkbox" />
+            </label>
+            <div class="settings-row" data-settings-text="사용 기록 초기화">
+              <span>사용 기록</span>
+              <button class="secondary-button settings-action-button" id="resetUsedWords" type="button">초기화</button>
+            </div>
+            <label class="settings-row" for="settingsLanguage">
+              <span>언어</span>
+              <select id="settingsLanguage">
+                <option value="ko">한국어</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="source-block">
+          <div class="source-row">
+            <span class="presence online"></span>
+            <div>
+              <strong>기본팩</strong>
+              <small id="defaultSourceMeta">우리말샘 오프라인 단어팩</small>
+            </div>
+          </div>
+          <div class="source-row">
+            <span class="presence idle"></span>
+            <div>
+              <strong>파일 추가</strong>
+              <small id="fileState">없음</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="dictionary-tools settings-section" data-settings-text="추가 단어 파일 초기화 적용 사전">
+          <label for="customDictionary">추가 단어</label>
+          <textarea
+            id="customDictionary"
+            spellcheck="false"
+            placeholder="입력..."
+          ></textarea>
+          <div class="tool-row">
+            <label class="file-button" for="fileInput">파일</label>
+            <input id="fileInput" type="file" accept=".txt,.csv,.dic" />
+            <button class="secondary-button" id="resetDictionary" type="button">초기화</button>
+            <button class="primary-button" id="applyDictionary" type="button">적용</button>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="site-license" aria-label="우리말샘 출처와 저작권">
+      <a href="https://opendict.korean.go.kr/" target="_blank" rel="noopener">출처:우리말샘</a>
+      <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener">CC BY-SA 2.0</a>
+    </footer>
+
+    <script src="./app.js?v=offline-text-search-20260617"></script>
+  </body>
+</html>
