@@ -1610,7 +1610,6 @@ function initApp(core) {
     searchRequestId: 0,
     searchTimer: 0,
     pendingSearch: false,
-    isComposing: false,
     showUsedControls: loadBooleanSetting(USED_WORD_CONTROLS_STORAGE_KEY, true),
     sourceMode: "starts",
     usedWordKeys: loadUsedWordKeys(),
@@ -1707,36 +1706,17 @@ function initApp(core) {
   });
   elements.closeDictionary.addEventListener("click", () => setDictionaryPanelOpen(false));
   elements.panelBackdrop.addEventListener("click", () => setDictionaryPanelOpen(false));
-  elements.searchButton.addEventListener("click", () => {
-    state.isComposing = false;
-    scheduleSearch(0, true);
-  });
+  elements.searchButton.addEventListener("click", () => scheduleSearch(0, true));
   elements.queryInput.addEventListener("compositionstart", () => {
-    state.isComposing = true;
-    window.clearTimeout(state.searchTimer);
+    scheduleSearch(80, true);
   });
   elements.queryInput.addEventListener("compositionend", () => {
-    state.isComposing = false;
     scheduleSearch(0, true);
   });
-  elements.queryInput.addEventListener("blur", () => {
-    if (!state.isComposing) {
-      return;
-    }
-    state.isComposing = false;
-    scheduleSearch(0, true);
-  });
-  elements.queryInput.addEventListener("input", () => {
-    if (state.isComposing) {
-      return;
-    }
-    scheduleSearch(220, true);
-  });
+  elements.queryInput.addEventListener("blur", () => scheduleSearch(0, true));
+  elements.queryInput.addEventListener("input", () => scheduleSearch(80, true));
   elements.queryInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") {
-      return;
-    }
-    if (event.isComposing || state.isComposing) {
       return;
     }
 
@@ -1996,10 +1976,6 @@ function initApp(core) {
   }
 
   function runSearch() {
-    if (state.isComposing) {
-      state.pendingSearch = true;
-      return;
-    }
     if (!state.workerReady) {
       state.pendingSearch = true;
       return;
