@@ -1610,6 +1610,7 @@ function initApp(core) {
     searchRequestId: 0,
     searchTimer: 0,
     pendingSearch: false,
+    observedQuery: "",
     showUsedControls: loadBooleanSetting(USED_WORD_CONTROLS_STORAGE_KEY, true),
     sourceMode: "starts",
     usedWordKeys: loadUsedWordKeys(),
@@ -1706,21 +1707,33 @@ function initApp(core) {
   });
   elements.closeDictionary.addEventListener("click", () => setDictionaryPanelOpen(false));
   elements.panelBackdrop.addEventListener("click", () => setDictionaryPanelOpen(false));
-  elements.searchButton.addEventListener("click", () => scheduleSearch(0, true));
+  elements.searchButton.addEventListener("click", () => {
+    state.observedQuery = elements.queryInput.value;
+    scheduleSearch(0, true);
+  });
   elements.queryInput.addEventListener("compositionstart", () => {
+    state.observedQuery = elements.queryInput.value;
     scheduleSearch(80, true);
   });
   elements.queryInput.addEventListener("compositionend", () => {
+    state.observedQuery = elements.queryInput.value;
     scheduleSearch(0, true);
   });
-  elements.queryInput.addEventListener("blur", () => scheduleSearch(0, true));
-  elements.queryInput.addEventListener("input", () => scheduleSearch(80, true));
+  elements.queryInput.addEventListener("blur", () => {
+    state.observedQuery = elements.queryInput.value;
+    scheduleSearch(0, true);
+  });
+  elements.queryInput.addEventListener("input", () => {
+    state.observedQuery = elements.queryInput.value;
+    scheduleSearch(80, true);
+  });
   elements.queryInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") {
       return;
     }
 
     event.preventDefault();
+    state.observedQuery = elements.queryInput.value;
     scheduleSearch(0, true);
     if (mobileMedia.matches) {
       elements.queryInput.blur();
@@ -1858,6 +1871,19 @@ function initApp(core) {
 
   renderEmpty("단어장 인덱스를 만들고 있습니다");
   rebuildDictionary();
+  window.setInterval(() => {
+    const currentQuery = elements.queryInput.value;
+    const currentReading = core.toReading(currentQuery);
+    const renderedReading = elements.readingPreview.textContent;
+    if (
+      currentQuery === state.observedQuery &&
+      (!currentReading || renderedReading === currentReading || state.pendingSearch)
+    ) {
+      return;
+    }
+    state.observedQuery = currentQuery;
+    scheduleSearch(80, true);
+  }, 150);
 
   function rebuildDictionary() {
     abortOnlineLookup();
@@ -4227,133 +4253,7 @@ function createSearchWorker(core, dictionaryAssets) {
   if (typeof Worker === "undefined") {
     return createInlineWorkerFallback(core, fallbackDefaultText);
   }
-
-  const source = `
-    const core = (${core.__factory.toString()})();
-    const defaultDictionaryTextUrl = ${JSON.stringify(dictionaryAssets && dictionaryAssets.textUrl)};
-    const defaultDictionaryMetaUrl = ${JSON.stringify(dictionaryAssets && dictionaryAssets.metaUrl)};
-    const defaultDictionaryScriptUrl = ${JSON.stringify(dictionaryAssets && dictionaryAssets.scriptUrl)};
-    const fallbackDefaultText = ${JSON.stringify(fallbackDefaultText)};
-    let dictionary = null;
-    let defaultAssetsPromise = null;
-
-    async function fetchTextAsset(url) {
-      if (!url || typeof fetch !== "function") {
-        throw new Error("기본 단어 파일을 불러올 수 없습니다");
-      }
-      const response = await fetch(url, { cache: "force-cache" });
-      if (!response.ok) {
-        throw new Error("기본 단어 파일을 불러오지 못했습니다");
-      }
-      return response.text();
-    }
-
-    async function fetchJsonAsset(url) {
-      if (!url || typeof fetch !== "function") {
-        return null;
-      }
-      const response = await fetch(url, { cache: "force-cache" });
-      if (!response.ok) {
-        return null;
-      }
-      return response.json();
-    }
-
-    function loadScriptAsset() {
-      if (!defaultDictionaryScriptUrl) {
-        return {
-          text: fallbackDefaultText || core.FALLBACK_DICTIONARY,
-          meta: null
-        };
-      }
-      self.window = self;
-      importScripts(defaultDictionaryScriptUrl);
-      return {
-        text: self.KKUNG_DEFAULT_DICTIONARY_TEXT || fallbackDefaultText || core.FALLBACK_DICTIONARY,
-        meta: self.KKUNG_DEFAULT_DICTIONARY_META || null
-      };
-    }
-
-    function loadDefaultAssets() {
-      if (!defaultAssetsPromise) {
-        defaultAssetsPromise = (async () => {
-          try {
-            const text = await fetchTextAsset(defaultDictionaryTextUrl);
-            const meta = await fetchJsonAsset(defaultDictionaryMetaUrl);
-            return {
-              text: text || fallbackDefaultText || core.FALLBACK_DICTIONARY,
-              meta
-            };
-          } catch (error) {
-            return loadScriptAsset();
-          }
-        })();
-      }
-      return defaultAssetsPromise;
-    }
-
-    self.onmessage = (event) => {
-      handleMessage(event.data);
-    };
-
-    async function handleMessage(message) {
-      try {
-        if (message.type === "buildDefault") {
-          const defaultAssets = await loadDefaultAssets();
-          const baseText = defaultAssets.text || fallbackDefaultText || core.FALLBACK_DICTIONARY;
-          const extraText = message.extraText || "";
-          dictionary = core.createDictionary(extraText ? baseText + "\\n" + extraText : baseText);
-          self.postMessage({
-            type: "built",
-            id: message.id,
-            stats: dictionary.stats,
-            defaultMeta: defaultAssets.meta
-          });
-          return;
-        }
-        if (message.type === "build") {
-          dictionary = core.createDictionary(message.text || "");
-          self.postMessage({ type: "built", id: message.id, stats: dictionary.stats });
-          return;
-        }
-        if (message.type === "append") {
-          dictionary = core.extendDictionary(dictionary, message.text || "");
-          self.postMessage({ type: "built", id: message.id, stats: dictionary.stats });
-          return;
-        }
-        if (message.type === "appendOnlineCandidates") {
-          const selected = core.selectOnlineWords(
-            dictionary,
-            message.words || [],
-            message.target,
-            message.lookup || {}
-          );
-          if (selected.length) {
-            dictionary = core.extendDictionary(dictionary, selected.join("\\n"));
-          }
-          self.postMessage({
-            type: "onlineAppendResult",
-            id: message.id,
-            stats: dictionary.stats,
-            words: selected,
-            lookup: message.lookup || {}
-          });
-          return;
-        }
-        if (message.type === "search") {
-          if (!dictionary) {
-            throw new Error("단어장이 아직 준비되지 않았습니다");
-          }
-          const payload = core.searchDictionary(dictionary, message.options || {});
-          self.postMessage({ type: "searchResult", id: message.id, payload });
-        }
-      } catch (error) {
-        self.postMessage({ type: "error", id: message.id, message: error.message });
-      }
-    }
-  `;
-  const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-  return new Worker(url);
+  return new Worker(new URL("./search-worker.js?v=modern-search-custom-parse-20260617", window.location.href));
 }
 
 function createInlineWorkerFallback(core, fallbackDefaultText) {
