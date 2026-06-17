@@ -304,7 +304,8 @@
   }
 
   function cleanHangul(value) {
-    return Array.from(String(value || ""))
+    const normalized = String(value || "").normalize("NFC");
+    return Array.from(normalized)
       .filter(isHangulSyllable)
       .join("");
   }
@@ -1609,6 +1610,7 @@ function initApp(core) {
     requestId: 0,
     searchRequestId: 0,
     searchTimer: 0,
+    searchInFlight: false,
     pendingSearch: false,
     observedQuery: "",
     showUsedControls: loadBooleanSetting(USED_WORD_CONTROLS_STORAGE_KEY, true),
@@ -1640,6 +1642,7 @@ function initApp(core) {
     const message = event.data;
     if (message.type === "built") {
       state.workerReady = true;
+      state.searchInFlight = false;
       if (message.defaultMeta) {
         elements.defaultSourceMeta.textContent =
           `KO ${formatNumber(message.defaultMeta.korean)} / EN ${formatNumber(message.defaultMeta.english)} / 추가 ${formatNumber(message.defaultMeta.extra)}`;
@@ -1656,7 +1659,11 @@ function initApp(core) {
       if (message.id !== state.searchRequestId) {
         return;
       }
+      state.searchInFlight = false;
       renderSearch(message.payload);
+      if (state.pendingSearch) {
+        scheduleSearch(0);
+      }
       return;
     }
 
@@ -1666,12 +1673,14 @@ function initApp(core) {
     }
 
     if (message.type === "error") {
+      state.searchInFlight = false;
       setBusy(false, "오류");
       renderEmpty(message.message || "처리 중 오류가 났습니다");
     }
   };
   state.worker.onerror = (event) => {
     state.workerReady = false;
+    state.searchInFlight = false;
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
     const message = event && event.message ? event.message : "검색 엔진을 시작하지 못했습니다";
@@ -1679,6 +1688,7 @@ function initApp(core) {
   };
   state.worker.onmessageerror = () => {
     state.workerReady = false;
+    state.searchInFlight = false;
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
     renderEmpty("검색 결과를 읽지 못했습니다");
@@ -1891,6 +1901,7 @@ function initApp(core) {
       .filter(Boolean)
       .join("\n");
     state.workerReady = false;
+    state.searchInFlight = false;
     state.page = 1;
     state.searchRequestId = 0;
     state.pendingSearch = true;
@@ -2006,10 +2017,15 @@ function initApp(core) {
       state.pendingSearch = true;
       return;
     }
+    if (state.searchInFlight) {
+      state.pendingSearch = true;
+      return;
+    }
 
     state.pendingSearch = false;
     const requestId = ++state.requestId;
     state.searchRequestId = requestId;
+    state.searchInFlight = true;
     state.worker.postMessage({
       type: "search",
       id: requestId,
@@ -4253,7 +4269,7 @@ function createSearchWorker(core, dictionaryAssets) {
   if (typeof Worker === "undefined") {
     return createInlineWorkerFallback(core, fallbackDefaultText);
   }
-  return new Worker(new URL("./search-worker.js?v=modern-search-custom-parse-20260617", window.location.href));
+  return new Worker(new URL("./search-worker.js?v=modern-search-custom-parse-20260617-nfcfix6", window.location.href));
 }
 
 function createInlineWorkerFallback(core, fallbackDefaultText) {

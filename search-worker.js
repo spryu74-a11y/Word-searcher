@@ -13,6 +13,10 @@ const CATEGORY_CONNECTION = 0;
 const CATEGORY_ONE_SHOT = 1;
 const CATEGORY_ALTERNATIVE = 2;
 const CATEGORY_BLUNDER = 3;
+const LARGE_CANDIDATE_SORT_THRESHOLD = 20000;
+const MAX_CANDIDATES_PER_QUERY = 50000;
+const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
+const LARGE_DYNAMIC_RECALC_THRESHOLD = 5000;
 const HANGUL_BASE = 0xac00;
 const HANGUL_END = 0xd7a3;
 const VOWEL_COUNT = 21;
@@ -218,6 +222,10 @@ function searchDictionary(options) {
     exactReading,
     searchOptions
   );
+  const skipCounterWords =
+    !searchOptions.hasUsedWords &&
+    !searchOptions.forceDynamic &&
+    collected.total >= COUNTER_WORDS_SKIP_THRESHOLD;
 
   return {
     queryInfo,
@@ -227,7 +235,9 @@ function searchDictionary(options) {
     page: collected.page,
     pageSize: collected.pageSize,
     pageCount: collected.pageCount,
-    results: collected.results.map((state) => createSearchResultEntry(state, searchOptions)),
+    results: collected.results.map((state) =>
+      createSearchResultEntry(state, searchOptions, skipCounterWords)
+    ),
     elapsedMs: elapsed(started)
   };
 }
@@ -256,10 +266,33 @@ function searchByPrefixes(prefixes) {
     return [];
   }
 
+  if (uniquePrefixes.length === 1) {
+    const prefix = uniquePrefixes[0];
+    const bucket = getBucket(prefix[0]);
+    if (prefix.length === 1) {
+      return bucket.slice(0, MAX_CANDIDATES_PER_QUERY);
+    }
+    if (!customEntries.length) {
+      const filtered = [];
+      for (const index of bucket) {
+        if (entryReading(index).startsWith(prefix)) {
+          filtered.push(index);
+          if (filtered.length >= MAX_CANDIDATES_PER_QUERY) {
+            break;
+          }
+        }
+      }
+      return filtered;
+    }
+  }
+
   const candidates = [];
   const seen = new Set();
   for (const prefix of uniquePrefixes) {
     for (const index of getBucket(prefix[0])) {
+      if (candidates.length >= MAX_CANDIDATES_PER_QUERY) {
+        return candidates;
+      }
       if (seen.has(index)) {
         continue;
       }
@@ -270,6 +303,9 @@ function searchByPrefixes(prefixes) {
       candidates.push(index);
     }
     for (const index of getCustomIndices()) {
+      if (candidates.length >= MAX_CANDIDATES_PER_QUERY) {
+        return candidates;
+      }
       if (seen.has(index)) {
         continue;
       }
@@ -288,6 +324,9 @@ function searchByReply(starts) {
   const seen = new Set();
   for (const start of starts || []) {
     for (const index of getBucket(start)) {
+      if (candidates.length >= MAX_CANDIDATES_PER_QUERY) {
+        return candidates;
+      }
       if (seen.has(index)) {
         continue;
       }
@@ -324,6 +363,25 @@ function includeExactCandidates(candidates, exactWord, exactReading) {
 }
 
 function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
+  if (candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD) {
+    const filteredCandidates = options.hasUsedWords
+      ? candidates.filter((index) => !isUsedIndex(index, options))
+      : candidates;
+    return collectResultsFast(
+      filteredCandidates,
+      oneShotOnly,
+      pageSize,
+      page,
+      exactWord,
+      exactReading,
+      options
+    );
+  }
+
+  if (!options.hasUsedWords && !options.forceDynamic) {
+    return collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options);
+  }
+
   const oneShots = [];
   const alternatives = [];
   const blunders = [];
@@ -376,6 +434,115 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     pageCount,
     results: ordered.slice(start, start + size)
   };
+}
+
+function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
+  const oneShotIndices = [];
+  const alternativeIndices = [];
+  const blunderIndices = [];
+  const connectionIndices = [];
+
+  for (const index of candidates) {
+    const category = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+    if (category === CATEGORY_ONE_SHOT) {
+      oneShotIndices.push(index);
+    } else if (category === CATEGORY_ALTERNATIVE) {
+      alternativeIndices.push(index);
+    } else if (category === CATEGORY_BLUNDER) {
+      blunderIndices.push(index);
+    } else {
+      connectionIndices.push(index);
+    }
+  }
+
+  const total = candidates.length;
+  const shouldSort = total <= LARGE_CANDIDATE_SORT_THRESHOLD;
+  if (shouldSort) {
+    sortIndexGroup(oneShotIndices, exactWord, exactReading);
+    sortIndexGroup(alternativeIndices, exactWord, exactReading);
+    sortConnectionIndexGroup(connectionIndices);
+    sortIndexGroup(blunderIndices, exactWord, exactReading);
+  }
+
+  const categoryCounts = {
+    oneShot: oneShotIndices.length,
+    alternativeOneShot: alternativeIndices.length,
+    connection: connectionIndices.length,
+    blunder: blunderIndices.length
+  };
+
+  const orderedIndices = oneShotOnly
+    ? oneShotIndices.concat(alternativeIndices, connectionIndices, blunderIndices)
+    : connectionIndices.concat(alternativeIndices, oneShotIndices, blunderIndices);
+  const pinnedIndices = shouldSort
+    ? pinExactMatchIndices(orderedIndices, exactWord, exactReading)
+    : orderedIndices;
+
+  const size = Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT);
+  const requestedPage = Math.floor(Number(page)) || 1;
+  const pageCount = Math.max(1, Math.ceil(total / size));
+  const currentPage = Math.min(Math.max(1, requestedPage), pageCount);
+  const start = (currentPage - 1) * size;
+  const visible = pinnedIndices.slice(start, start + size).map((index) => getEntryState(index, options));
+
+  return {
+    total,
+    categoryCounts,
+    page: currentPage,
+    pageSize: size,
+    pageCount,
+    results: visible
+  };
+}
+
+function sortIndexGroup(indices, exactWord, exactReading) {
+  indices.sort((left, right) => {
+    const leftExact = isExactQueryMatchIndex(left, exactWord, exactReading);
+    const rightExact = isExactQueryMatchIndex(right, exactWord, exactReading);
+    if (leftExact !== rightExact) {
+      return leftExact ? -1 : 1;
+    }
+    return compareIndexReading(left, right);
+  });
+}
+
+function sortConnectionIndexGroup(indices) {
+  indices.sort((left, right) => {
+    const leftFollowers = Number(getPackedEntry(left)[ENTRY_FOLLOWER_COUNT]) || 0;
+    const rightFollowers = Number(getPackedEntry(right)[ENTRY_FOLLOWER_COUNT]) || 0;
+    if (leftFollowers !== rightFollowers) {
+      return leftFollowers - rightFollowers;
+    }
+    return compareIndexReading(left, right);
+  });
+}
+
+function pinExactMatchIndices(indices, exactWord, exactReading) {
+  if (!exactWord && !exactReading) {
+    return indices;
+  }
+
+  const exactMatches = [];
+  const rest = [];
+  for (const index of indices) {
+    const category = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+    if (
+      isExactQueryMatchIndex(index, exactWord, exactReading) &&
+      category !== CATEGORY_CONNECTION
+    ) {
+      exactMatches.push(index);
+    } else {
+      rest.push(index);
+    }
+  }
+  return exactMatches.length ? exactMatches.concat(rest) : indices;
+}
+
+function isExactQueryMatchIndex(index, exactWord, exactReading) {
+  return (
+    (exactWord && entryKey(index) === exactWord) ||
+    (exactReading && entryReading(index) === exactReading)
+  );
 }
 
 function getEntryState(index, options) {
@@ -472,7 +639,15 @@ function getOneShotCounterIndices(index, options) {
   return replies;
 }
 
-function createSearchResultEntry(state, options) {
+function createSearchResultEntry(state, options, skipCounterWords) {
+  if (skipCounterWords) {
+    return {
+      ...state,
+      oneShotReplyWords: [],
+      alternativeOneShotReplyWords: []
+    };
+  }
+
   return {
     ...state,
     oneShotReplyWords: getCounterReplyWords(state, (entry) => entry.oneShot, options),
@@ -787,7 +962,8 @@ function englishToHangul(value) {
 }
 
 function cleanHangul(value) {
-  return Array.from(String(value || ""))
+  const normalized = String(value || "").normalize("NFC");
+  return Array.from(normalized)
     .filter(isHangulSyllable)
     .join("");
 }

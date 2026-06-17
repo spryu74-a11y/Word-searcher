@@ -2,6 +2,7 @@ const assert = require("assert");
 const logic = require("./app.js");
 
 assert.strictEqual(logic.englishToHangul("Secret"), "시크릿");
+assert.strictEqual(logic.toReading("\u1100\u1161"), "가");
 assert.deepStrictEqual(logic.getAllowedStartSyllables("란"), ["란", "난"]);
 assert.ok(!logic.getAllowedStartSyllables("란").includes("안"));
 assert.deepStrictEqual(logic.getAllowedStartSyllables("린"), ["린", "인"]);
