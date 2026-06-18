@@ -17,7 +17,6 @@ const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const MAX_CANDIDATES_PER_QUERY = 50000;
 const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
 const MAX_COUNTER_REPLY_WORDS = 12;
-const LARGE_DYNAMIC_RECALC_THRESHOLD = 800;
 const HANGUL_BASE = 0xac00;
 const HANGUL_END = 0xd7a3;
 const VOWEL_COUNT = 21;
@@ -338,14 +337,33 @@ function createSearchOptions(options) {
       usedKeySet.add(key);
     }
   }
+  const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     usedKeySet,
     hasUsedWords: usedKeySet.size > 0,
     forceDynamic: customEntries.length > 0,
+    usedStartCounts,
     stateCache: new Map(),
     followerCache: new Map(),
-    oneShotCounterCache: new Map()
+    oneShotCounterCache: new Map(),
+    alternativeOneShotCounterCache: new Map()
   };
+}
+
+function createUsedStartCounts(usedKeySet) {
+  const counts = new Map();
+  if (!usedKeySet || !usedKeySet.size) {
+    return counts;
+  }
+  for (const key of usedKeySet) {
+    const index = getIndexByKey(key);
+    if (index < 0) {
+      continue;
+    }
+    const start = entryStart(index);
+    counts.set(start, (counts.get(start) || 0) + 1);
+  }
+  return counts;
 }
 
 function searchByPrefixes(prefixes) {
@@ -451,18 +469,6 @@ function includeExactCandidates(candidates, exactWord, exactReading) {
 }
 
 function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
-  if (candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD) {
-    return collectResultsFast(
-      candidates,
-      oneShotOnly,
-      pageSize,
-      page,
-      exactWord,
-      exactReading,
-      options
-    );
-  }
-
   if (!options.hasUsedWords && !options.forceDynamic) {
     return collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options);
   }
@@ -646,20 +652,16 @@ function getEntryState(index, options) {
   let oneShotReplyCount = Number(entry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
   let alternativeOneShotReplyCount = Number(entry[ENTRY_ALTERNATIVE_REPLY_COUNT]) || 0;
 
-  if (index >= baseEntries.length || options.hasUsedWords) {
+  if (options.forceDynamic || options.hasUsedWords) {
     followerCount = getAvailableFollowerCount(index, options);
     const replyOptions = createPlayedOptions(options, index);
     const oneShotCounters = getOneShotCounterIndices(index, replyOptions);
+    const alternativeOneShotCounters = getAlternativeOneShotCounterIndices(index, replyOptions);
     oneShot = followerCount === 0;
     oneShotReplyCount = oneShotCounters.length;
-    if (options.hasUsedWords) {
-      alternativeOneShot = false;
-      alternativeOneShotReplyCount = 0;
-      blunder = false;
-    }
-    if (!oneShot && !alternativeOneShot && (blunder || oneShotReplyCount > 0)) {
-      blunder = true;
-    }
+    alternativeOneShotReplyCount = alternativeOneShotCounters.length;
+    blunder = followerCount > 0 && (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
+    alternativeOneShot = !oneShot && !blunder && category === CATEGORY_ALTERNATIVE;
     if (blunder) {
       alternativeOneShot = false;
     }
@@ -687,11 +689,24 @@ function getEntryState(index, options) {
 
 function getAvailableFollowerCount(index, options) {
   const staticFollowerCount = getStaticFollowerCount(index);
-  if (!options.hasUsedWords || staticFollowerCount > getUsedKeyCount(options)) {
+  if (!options.forceDynamic && !options.hasUsedWords) {
     return staticFollowerCount;
   }
   if (options.followerCache.has(index)) {
     return options.followerCache.get(index);
+  }
+
+  if (!options.forceDynamic && options.hasUsedWords) {
+    let usedFollowers = 0;
+    for (const start of getAllowedAfter(index)) {
+      usedFollowers += (options.usedStartCounts && options.usedStartCounts.get(start)) || 0;
+    }
+    if (isUsedIndex(index, options) && getAllowedAfter(index).includes(entryStart(index))) {
+      usedFollowers -= 1;
+    }
+    const count = Math.max(0, staticFollowerCount - Math.max(0, usedFollowers));
+    options.followerCache.set(index, count);
+    return count;
   }
 
   let count = 0;
@@ -732,6 +747,31 @@ function getOneShotCounterIndices(index, options) {
   }
   replies.sort(compareIndexReading);
   options.oneShotCounterCache.set(index, replies);
+  return replies;
+}
+
+function getAlternativeOneShotCounterIndices(index, options) {
+  if (options.alternativeOneShotCounterCache.has(index)) {
+    return options.alternativeOneShotCounterCache.get(index);
+  }
+
+  const replies = [];
+  const seen = new Set();
+  for (const start of getAllowedAfter(index)) {
+    forEachBucketIndex(start, (replyIndex) => {
+      if (replyIndex === index || seen.has(replyIndex) || isUsedIndex(replyIndex, options)) {
+        return;
+      }
+      seen.add(replyIndex);
+      const entry = getPackedEntry(replyIndex);
+      const category = Number(entry[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      if (category === CATEGORY_ALTERNATIVE && getAvailableFollowerCount(replyIndex, options) > 0) {
+        replies.push(replyIndex);
+      }
+    });
+  }
+  replies.sort(compareIndexReading);
+  options.alternativeOneShotCounterCache.set(index, replies);
   return replies;
 }
 
@@ -1140,12 +1180,8 @@ function getStaticFollowerCount(index) {
   return Number(getPackedEntry(index)[ENTRY_FOLLOWER_COUNT]) || 0;
 }
 
-function getUsedKeyCount(options) {
-  return options && options.usedKeySet ? options.usedKeySet.size : 0;
-}
-
 function canBecomeOneShot(index, options) {
-  return getStaticFollowerCount(index) <= getUsedKeyCount(options);
+  return getAvailableFollowerCount(index, options) === 0;
 }
 
 function createPlayedOptions(options, playedIndex) {
@@ -1155,13 +1191,18 @@ function createPlayedOptions(options, playedIndex) {
   }
   const usedKeySet = new Set(options.usedKeySet || []);
   usedKeySet.add(playedKey);
+  const usedStartCounts = new Map(options.usedStartCounts || []);
+  const start = entryStart(playedIndex);
+  usedStartCounts.set(start, (usedStartCounts.get(start) || 0) + 1);
   return {
     ...options,
     usedKeySet,
     hasUsedWords: true,
+    usedStartCounts,
     stateCache: new Map(),
     followerCache: new Map(),
-    oneShotCounterCache: new Map()
+    oneShotCounterCache: new Map(),
+    alternativeOneShotCounterCache: new Map()
   };
 }
 

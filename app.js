@@ -24,7 +24,6 @@
   const TRAILING_RIEUL = 8;
   const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
   const DEFAULT_LIMIT = 260;
-  const LARGE_DYNAMIC_RECALC_THRESHOLD = 800;
   const MAX_COUNTER_REPLY_WORDS = 12;
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
@@ -941,14 +940,8 @@
     const blunders = [];
     const safeConnections = [];
     let total = 0;
-    const useStaticState =
-      options &&
-      options.usedKeySet &&
-      options.usedKeySet.size &&
-      candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD;
-
     for (const entry of candidates) {
-      const resultEntry = useStaticState ? entry : getSearchEntryState(dictionary, entry, options);
+      const resultEntry = getSearchEntryState(dictionary, entry, options);
       total += 1;
       if (resultEntry.oneShot) {
         oneShots.push(resultEntry);
@@ -1061,6 +1054,21 @@
     return result;
   }
 
+  function createUsedStartCounts(dictionary, usedKeySet) {
+    const counts = new Map();
+    if (!usedKeySet || !usedKeySet.size || !dictionary || !dictionary.byKey) {
+      return counts;
+    }
+    for (const key of usedKeySet) {
+      const entry = dictionary.byKey.get(key);
+      if (!entry || !entry.start) {
+        continue;
+      }
+      counts.set(entry.start, (counts.get(entry.start) || 0) + 1);
+    }
+    return counts;
+  }
+
   function isUsedEntry(entry, options) {
     return Boolean(entry && options && options.usedKeySet && options.usedKeySet.has(entry.key));
   }
@@ -1071,18 +1079,24 @@
     }
     const usedKeySet = new Set((options && options.usedKeySet) || []);
     usedKeySet.add(entry.key);
+    const usedStartCounts = new Map((options && options.usedStartCounts) || []);
+    if (entry.start) {
+      usedStartCounts.set(entry.start, (usedStartCounts.get(entry.start) || 0) + 1);
+    }
     return {
       ...(options || {}),
       usedKeySet,
+      usedStartCounts,
       stateCache: new Map(),
       followerCountCache: new Map(),
-      oneShotCounterCache: new Map()
+      oneShotCounterCache: new Map(),
+      alternativeOneShotCounterCache: new Map()
     };
   }
 
   function getAvailableFollowerCount(dictionary, entry, options) {
     const staticFollowerCount = getStaticFollowerCount(entry);
-    if (!options || !options.usedKeySet || !options.usedKeySet.size || staticFollowerCount > getUsedKeyCount(options)) {
+    if (!options || !options.usedKeySet || !options.usedKeySet.size) {
       return staticFollowerCount;
     }
     if (!options.followerCountCache) {
@@ -1092,18 +1106,14 @@
       return options.followerCountCache.get(entry.key);
     }
 
-    let count = 0;
-    const seen = new Set();
+    let usedFollowers = 0;
     for (const start of entry.allowedAfter || []) {
-      const bucket = dictionary.byStart.get(start) || [];
-      for (const reply of bucket) {
-        if (reply.key === entry.key || seen.has(reply.key) || isUsedEntry(reply, options)) {
-          continue;
-        }
-        seen.add(reply.key);
-        count += 1;
-      }
+      usedFollowers += (options.usedStartCounts && options.usedStartCounts.get(start)) || 0;
     }
+    if (isUsedEntry(entry, options) && (entry.allowedAfter || []).includes(entry.start)) {
+      usedFollowers -= 1;
+    }
+    const count = Math.max(0, staticFollowerCount - Math.max(0, usedFollowers));
     options.followerCountCache.set(entry.key, count);
     return count;
   }
@@ -1125,7 +1135,7 @@
           continue;
         }
         seen.add(reply.key);
-        if (!canBecomeOneShotEntry(reply, options)) {
+        if (!canBecomeOneShotEntry(dictionary, reply, options)) {
           continue;
         }
         if (getAvailableFollowerCount(dictionary, reply, options) === 0) {
@@ -1135,6 +1145,36 @@
     }
     replies.sort(compareReading);
     options.oneShotCounterCache.set(entry.key, replies);
+    return replies;
+  }
+
+  function getAlternativeOneShotCounterEntries(dictionary, entry, options) {
+    if (!options.alternativeOneShotCounterCache) {
+      options.alternativeOneShotCounterCache = new Map();
+    }
+    if (options.alternativeOneShotCounterCache.has(entry.key)) {
+      return options.alternativeOneShotCounterCache.get(entry.key);
+    }
+
+    const replies = [];
+    const seen = new Set();
+    for (const start of entry.allowedAfter || []) {
+      const bucket = dictionary.byStart.get(start) || [];
+      for (const reply of bucket) {
+        if (reply.key === entry.key || seen.has(reply.key) || isUsedEntry(reply, options)) {
+          continue;
+        }
+        seen.add(reply.key);
+        if (
+          reply.alternativeOneShot &&
+          getAvailableFollowerCount(dictionary, reply, options) > 0
+        ) {
+          replies.push(reply);
+        }
+      }
+    }
+    replies.sort(compareReading);
+    options.alternativeOneShotCounterCache.set(entry.key, replies);
     return replies;
   }
 
@@ -1152,14 +1192,21 @@
     const followerCount = getAvailableFollowerCount(dictionary, entry, options);
     const replyOptions = createPlayedOptions(options, entry);
     const oneShotReplyCount = getOneShotCounterEntries(dictionary, entry, replyOptions).length;
+    const alternativeOneShotReplyCount = getAlternativeOneShotCounterEntries(
+      dictionary,
+      entry,
+      replyOptions
+    ).length;
+    const oneShot = followerCount === 0;
+    const blunder = followerCount > 0 && (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
     const state = {
       ...entry,
       followerCount,
-      oneShot: followerCount === 0,
-      alternativeOneShot: false,
-      alternativeOneShotReplyCount: 0,
+      oneShot,
+      alternativeOneShot: !oneShot && !blunder && Boolean(entry.alternativeOneShot),
+      alternativeOneShotReplyCount,
       oneShotReplyCount,
-      blunder: followerCount > 0 && oneShotReplyCount > 0
+      blunder
     };
     options.stateCache.set(entry.key, state);
     return state;
@@ -1169,12 +1216,8 @@
     return Number(entry && entry.followerCount) || 0;
   }
 
-  function getUsedKeyCount(options) {
-    return options && options.usedKeySet ? options.usedKeySet.size : 0;
-  }
-
-  function canBecomeOneShotEntry(entry, options) {
-    return getStaticFollowerCount(entry) <= getUsedKeyCount(options);
+  function canBecomeOneShotEntry(dictionary, entry, options) {
+    return getAvailableFollowerCount(dictionary, entry, options) === 0;
   }
 
   function getCounterReplyWords(dictionary, entry, predicate, options) {
@@ -1409,13 +1452,15 @@
     const exactReading = queryInfo.reading;
     const oneShotOnly = Boolean(options.oneShotOnly);
     const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
+    const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
     const searchOptions = {
       oneShotOnly,
       pageSize,
       page,
       exactWord,
       exactReading,
-      usedKeySet: createUsedKeySet(dictionary, options.usedKeys)
+      usedKeySet,
+      usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
     };
     const collected =
       sourceMode === "reply"
@@ -1558,7 +1603,7 @@ function initApp(core) {
   const TABLET_RESULT_PAGE_SIZE = 40;
   const MOBILE_RESULT_PAGE_SIZE = 25;
   const ONE_SHOT_RESULT_PAGE_SIZE = 120;
-  const SEARCH_WATCHDOG_MS = 8000;
+  const SEARCH_SLOW_NOTICE_MS = 8000;
   const REQUIRED_SUPPLEMENT_WORDS = ["킷값"];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
@@ -2145,8 +2190,8 @@ function initApp(core) {
       if (!state.searchInFlight || state.searchRequestId !== requestId) {
         return;
       }
-      restartSearchWorker("검색 재시작중");
-    }, SEARCH_WATCHDOG_MS);
+      setBusy(true, "검색중...");
+    }, SEARCH_SLOW_NOTICE_MS);
   }
 
   function clearSearchWatchdog() {
@@ -2163,25 +2208,6 @@ function initApp(core) {
       String(getPageSize()),
       Array.from(state.usedWordKeys).sort().join(",")
     ].join("|");
-  }
-
-  function restartSearchWorker(label) {
-    clearSearchWatchdog();
-    if (state.worker && typeof state.worker.terminate === "function") {
-      state.worker.terminate();
-    }
-    state.worker = createSearchWorker(core, {
-      textUrl: defaultDictionaryTextUrl,
-      metaUrl: defaultDictionaryMetaUrl,
-      scriptUrl: defaultDictionaryScriptUrl,
-      fallbackText: fallbackDefaultText
-    });
-    attachWorkerHandlers(state.worker);
-    state.workerReady = false;
-    state.searchInFlight = false;
-    state.pendingSearch = true;
-    setBusy(true, label || "검색 재시작중");
-    rebuildDictionary();
   }
 
   function getPageSize() {
@@ -4513,7 +4539,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-static-wordpack", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-stability", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
