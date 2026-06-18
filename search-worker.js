@@ -1,6 +1,9 @@
 "use strict";
 
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=modern-search-index-shards-20260618";
 const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260618-kits";
+const SHARD_BASE_URL = "./data/search-index-shards/";
+const SHARD_VERSION = "modern-search-index-shards-20260618";
 const DEFAULT_LIMIT = 260;
 const ENTRY_WORD = 0;
 const ENTRY_READING = 1;
@@ -29,9 +32,12 @@ const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
 const EMPTY = Object.freeze([]);
 
 let indexPromise = null;
+let useFullIndex = false;
+let shardFiles = Object.create(null);
+let shardPromises = new Map();
 let baseEntries = [];
 let baseBuckets = Object.create(null);
-let baseByKey = null;
+let baseByKey = new Map();
 let baseStats = null;
 let defaultMeta = null;
 let customEntries = [];
@@ -82,7 +88,7 @@ async function handleMessage(message) {
 
     if (message.type === "search") {
       await ensureIndex();
-      const payload = searchDictionary(message.options || {});
+      const payload = await searchDictionary(message.options || {});
       self.postMessage({ type: "searchResult", id: message.id, payload });
     }
   } catch (error) {
@@ -96,24 +102,105 @@ async function handleMessage(message) {
 
 async function ensureIndex() {
   if (!indexPromise) {
-    indexPromise = fetch(INDEX_URL, { cache: "force-cache" })
+    indexPromise = fetch(INDEX_MANIFEST_URL, { cache: "force-cache" })
       .then((response) => {
         if (!response.ok) {
-          throw new Error("검색 인덱스를 불러오지 못했습니다");
+          throw new Error("검색 인덱스 manifest를 불러오지 못했습니다");
         }
         return response.json();
       })
       .then((payload) => {
-        baseEntries = payload.entries || [];
-        baseBuckets = payload.buckets || Object.create(null);
+        useFullIndex = false;
+        shardFiles = Object.create(null);
+        for (const [start, info] of Object.entries(payload.shards || {})) {
+          const file = info && typeof info === "object" ? info.file : "";
+          if (file) {
+            shardFiles[start] = file;
+          }
+        }
+        const total = Number(payload.total || (payload.stats && payload.stats.total) || 0);
+        baseEntries = [];
+        baseEntries.length = total;
+        baseBuckets = Object.create(null);
+        baseByKey = new Map();
         baseStats = payload.stats || createEmptyStats();
         defaultMeta = payload.meta || null;
-        buildBaseKeyMap();
         runtimeStats = { ...baseStats, buildMs: 0 };
         return payload;
-      });
+      })
+      .catch(() => loadFullIndex());
   }
   return indexPromise;
+}
+
+function loadFullIndex() {
+  return fetch(INDEX_URL, { cache: "force-cache" })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error("검색 인덱스를 불러오지 못했습니다");
+      }
+      return response.json();
+    })
+    .then((payload) => {
+      useFullIndex = true;
+      shardFiles = Object.create(null);
+      shardPromises = new Map();
+      baseEntries = payload.entries || [];
+      baseBuckets = payload.buckets || Object.create(null);
+      baseStats = payload.stats || createEmptyStats();
+      defaultMeta = payload.meta || null;
+      buildBaseKeyMap();
+      runtimeStats = { ...baseStats, buildMs: 0 };
+      return payload;
+    });
+}
+
+async function loadShards(starts) {
+  await ensureIndex();
+  if (useFullIndex) {
+    return;
+  }
+  const uniqueStarts = Array.from(new Set((starts || []).filter(Boolean)));
+  await Promise.all(uniqueStarts.map((start) => loadShard(start)));
+}
+
+async function loadShard(start) {
+  if (useFullIndex || baseBuckets[start]) {
+    return;
+  }
+
+  const file = shardFiles[start];
+  if (!file) {
+    baseBuckets[start] = EMPTY;
+    return;
+  }
+
+  if (!shardPromises.has(start)) {
+    const request = fetch(`${SHARD_BASE_URL}${file}?v=${SHARD_VERSION}`, { cache: "force-cache" })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`검색 shard를 불러오지 못했습니다: ${start}`);
+        }
+        return response.json();
+      })
+      .then((payload) => {
+        const indices = [];
+        for (const row of payload.entries || []) {
+          const index = Number(row[0]);
+          if (!Number.isFinite(index)) {
+            continue;
+          }
+          const packed = row.slice(1);
+          baseEntries[index] = packed;
+          baseByKey.set(normalizeKey(packed[ENTRY_WORD]), index);
+          indices.push(index);
+        }
+        baseBuckets[start] = indices;
+        return indices;
+      });
+    shardPromises.set(start, request);
+  }
+  await shardPromises.get(start);
 }
 
 async function buildRuntime(extraText) {
@@ -124,6 +211,7 @@ async function buildRuntime(extraText) {
   customByKey = new Map();
 
   const parsed = parseCustomEntries(extraText);
+  await loadShards(parsed.entries.map((entry) => entry.start));
   for (const entry of parsed.entries) {
     if (baseByKey.has(entry.key) || customByKey.has(entry.key)) {
       continue;
@@ -148,6 +236,7 @@ async function buildRuntime(extraText) {
     }
   }
 
+  await loadShards(getAllowedAfterStartsForPackedEntries(customEntries));
   for (let offset = 0; offset < customEntries.length; offset += 1) {
     const index = baseEntries.length + offset;
     const entry = customEntries[offset];
@@ -168,6 +257,18 @@ async function buildRuntime(extraText) {
     custom: customEntries.length,
     buildMs: Math.round(now() - started)
   };
+}
+
+function getAllowedAfterStartsForPackedEntries(entries) {
+  const starts = new Set();
+  for (const entry of entries || []) {
+    const reading = String(entry && entry[ENTRY_READING] ? entry[ENTRY_READING] : "");
+    const end = reading[reading.length - 1];
+    for (const start of getAllowedStartSyllables(end)) {
+      starts.add(start);
+    }
+  }
+  return Array.from(starts);
 }
 
 function appendOnlineCandidateWords(words, lookup) {
@@ -259,12 +360,11 @@ function matchesLookupEntry(entry, lookup) {
 }
 
 function buildBaseKeyMap() {
-  if (baseByKey) {
-    return;
-  }
   baseByKey = new Map();
   for (let index = 0; index < baseEntries.length; index += 1) {
-    baseByKey.set(entryKey(index), index);
+    if (baseEntries[index]) {
+      baseByKey.set(entryKey(index), index);
+    }
   }
 }
 
@@ -280,13 +380,12 @@ function createEmptyStats() {
   };
 }
 
-function searchDictionary(options) {
+async function searchDictionary(options) {
   const started = now();
   const pageSize = Number(options.pageSize || options.limit || DEFAULT_LIMIT);
   const page = Number(options.page || 1);
   const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
   const queryInfo = getQueryInfo(options.query, sourceMode);
-  const searchOptions = createSearchOptions(options);
   const exactWord = normalizeKey(options.query || "");
   const exactReading = queryInfo.reading;
 
@@ -298,11 +397,16 @@ function searchDictionary(options) {
     };
   }
 
+  await loadShards(getSearchShardStarts(queryInfo, sourceMode));
+  const searchOptions = createSearchOptions(options);
   const candidates =
     sourceMode === "reply"
       ? searchByReply(queryInfo.starts)
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
+  if (searchOptions.hasUsedWords || searchOptions.forceDynamic) {
+    await loadShards(getAllowedAfterStartsForIndices(merged));
+  }
   const collected = collectResults(
     merged,
     Boolean(options.oneShotOnly),
@@ -313,6 +417,9 @@ function searchDictionary(options) {
     searchOptions
   );
   const skipCounterWords = false;
+  if (!skipCounterWords) {
+    await loadShards(getCounterShardStarts(collected.results));
+  }
 
   return {
     queryInfo,
@@ -357,13 +464,55 @@ function createUsedStartCounts(usedKeySet) {
   }
   for (const key of usedKeySet) {
     const index = getIndexByKey(key);
-    if (index < 0) {
+    const start = index >= 0 ? entryStart(index) : toReading(key)[0];
+    if (!start) {
       continue;
     }
-    const start = entryStart(index);
     counts.set(start, (counts.get(start) || 0) + 1);
   }
   return counts;
+}
+
+function getSearchShardStarts(queryInfo, sourceMode) {
+  const starts = new Set();
+  if (queryInfo && queryInfo.reading) {
+    starts.add(queryInfo.reading[0]);
+  }
+  if (sourceMode === "reply") {
+    for (const start of queryInfo.starts || []) {
+      starts.add(start);
+    }
+  } else {
+    for (const prefix of queryInfo.prefixes || []) {
+      if (prefix) {
+        starts.add(prefix[0]);
+      }
+    }
+  }
+  return Array.from(starts);
+}
+
+function getAllowedAfterStartsForIndices(indices) {
+  const starts = new Set();
+  for (const index of indices || []) {
+    for (const start of getAllowedAfter(index)) {
+      starts.add(start);
+    }
+  }
+  return Array.from(starts);
+}
+
+function getCounterShardStarts(states) {
+  const starts = new Set();
+  for (const state of states || []) {
+    if (!state || !state.blunder) {
+      continue;
+    }
+    for (const start of state.allowedAfter || []) {
+      starts.add(start);
+    }
+  }
+  return Array.from(starts);
 }
 
 function searchByPrefixes(prefixes) {

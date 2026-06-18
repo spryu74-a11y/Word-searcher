@@ -4539,7 +4539,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-stability", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-sharded-index", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
