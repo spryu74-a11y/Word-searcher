@@ -217,8 +217,12 @@ function prefetchAllShards() {
     if (idx >= starts.length) return;
     loadShard(starts[idx++]).then(next, next);
   }
-  const concurrency = Math.min(8, starts.length);
-  for (let i = 0; i < concurrency; i++) next();
+  // HTTP/1.1은 도메인당 연결 6개 제한 — 검색 fetch가 밀리지 않도록
+  // 2개 체인으로 제한하고 1초 뒤 시작 (첫 검색 우선)
+  const concurrency = Math.min(2, starts.length);
+  setTimeout(() => {
+    for (let i = 0; i < concurrency; i++) next();
+  }, 1000);
 }
 
 async function buildRuntime(extraText) {
@@ -389,11 +393,16 @@ async function searchDictionary(options) {
     return {
       queryInfo,
       ...createEmptyResults(pageSize, page),
-      elapsedMs: elapsed(started)
+      elapsedMs: 0,
+      timing: { shardMs: 0, searchMs: 0, stateMs: 0 }
     };
   }
 
+  const t0 = now();
   await loadShards(getSearchShardStarts(queryInfo, sourceMode));
+  const shardMs = elapsed(t0);
+
+  const t1 = now();
   const searchOptions = createSearchOptions(options);
   const candidates =
     sourceMode === "reply"
@@ -401,7 +410,6 @@ async function searchDictionary(options) {
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
 
-  // Always use static categorization for ordering (fast, no extra shard loads needed)
   const collected = collectResultsFast(
     merged,
     Boolean(options.oneShotOnly),
@@ -411,21 +419,24 @@ async function searchDictionary(options) {
     exactReading,
     searchOptions
   );
+  const searchMs = elapsed(t1);
 
   const isDynamic = searchOptions.hasUsedWords || searchOptions.forceDynamic;
 
-  // Load follower shards only for visible entries (not all candidates)
+  const t2 = now();
   if (isDynamic) {
     await loadShards(getAllowedAfterStartsForIndices(collected.visibleIndices));
   }
+  const followerMs = elapsed(t2);
 
-  // Compute full dynamic states for visible entries (shards now loaded)
+  const t3 = now();
   const visibleStates = collected.visibleIndices.map((index) => getEntryState(index, searchOptions));
+  const stateMs = elapsed(t3);
 
-  // Load counter shards in background — don't block the response
   loadShards(getCounterShardStarts(visibleStates)).catch(() => {});
   const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, false));
 
+  const totalMs = elapsed(started);
   return {
     queryInfo,
     total: collected.total,
@@ -435,7 +446,8 @@ async function searchDictionary(options) {
     pageSize: collected.pageSize,
     pageCount: collected.pageCount,
     results,
-    elapsedMs: elapsed(started)
+    elapsedMs: totalMs,
+    timing: { shardMs, searchMs, followerMs, stateMs, totalMs }
   };
 }
 

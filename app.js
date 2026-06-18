@@ -1759,7 +1759,16 @@ function initApp(core) {
         return;
       }
       state.pendingSearch = false;
+      const renderStart = performance.now();
       renderSearch(message.payload);
+      const renderMs = Math.round(performance.now() - renderStart);
+      const totalMs = Math.round(performance.now() - (state._searchStartTime || 0));
+      const t = message.payload && message.payload.timing;
+      console.debug(
+        `[검색 타이밍] 총=${totalMs}ms | worker=${message.payload && message.payload.elapsedMs}ms` +
+        (t ? ` (shard=${t.shardMs}ms search=${t.searchMs}ms follower=${t.followerMs || 0}ms state=${t.stateMs}ms)` : "") +
+        ` | render=${renderMs}ms | 결과=${message.payload && message.payload.total}건`
+      );
       return;
     }
 
@@ -1913,7 +1922,14 @@ function initApp(core) {
     }
     setResultPage(Number(button.dataset.page));
   });
-  elements.resultList.addEventListener("scroll", updateBackToTop);
+  let _scrollThrottleTimer = null;
+  elements.resultList.addEventListener("scroll", () => {
+    if (_scrollThrottleTimer) return;
+    _scrollThrottleTimer = setTimeout(() => {
+      _scrollThrottleTimer = null;
+      updateBackToTop();
+    }, 100);
+  });
   elements.backToTop.addEventListener("click", () => {
     animateResultListToTop();
   });
@@ -2169,6 +2185,7 @@ function initApp(core) {
     state.searchRequestId = requestId;
     state.searchSignature = getSearchSignature(query);
     state.searchInFlight = true;
+    state._searchStartTime = performance.now();
     startSearchWatchdog(requestId);
     state.worker.postMessage({
       type: "search",
