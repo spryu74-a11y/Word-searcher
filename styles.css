@@ -102,40 +102,54 @@ button {
   width: 48px;
   aspect-ratio: 1;
   place-items: center;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 50%;
   background: #313338;
-  color: white;
+  color: #dbdee1;
   font-size: 18px;
   font-weight: 800;
   transition:
     border-radius 0.18s ease,
-    background 0.18s ease;
-}
-
-.guild-icon img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  object-fit: cover;
+    background 0.18s ease,
+    color 0.18s ease;
 }
 
 .guild-icon.selected {
   border-radius: 16px;
+  background: #5865f2;
+  color: white;
+}
+
+.guild-mark {
+  display: block;
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+  pointer-events: none;
+}
+
+.guild-settings .guild-mark {
+  width: 25px;
+  height: 25px;
+  stroke-width: 1.9;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .guild-icon:hover {
     border-radius: 16px;
-    background: #3a3c43;
+    background: #5865f2;
+    color: white;
   }
 }
 
 .guild-icon::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: -12px;
   width: 4px;
   height: 0;
   border-radius: 0 4px 4px 0;
@@ -1265,7 +1279,7 @@ body.settings-channel .member-panel {
   }
 
   .guild-icon::before {
-    left: 0;
+    left: -7px;
   }
 
   .guild-icon.selected::before {
@@ -1551,10 +1565,13 @@ body.settings-channel .member-panel {
 @media (hover: none), (pointer: coarse) {
   .guild-icon:hover {
     background: #313338;
+    color: #dbdee1;
     border-radius: 50%;
   }
 
   .guild-icon.selected:hover {
+    background: #5865f2;
+    color: white;
     border-radius: 16px;
   }
 
