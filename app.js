@@ -1124,35 +1124,7 @@
   }
 
   function getSearchEntryState(dictionary, entry, options) {
-    if (!options || !options.usedKeySet || !options.usedKeySet.size) {
-      return entry;
-    }
-    if (!options.entryStateCache) {
-      options.entryStateCache = new Map();
-    }
-    const cached = options.entryStateCache.get(entry.key);
-    if (cached) {
-      return cached;
-    }
-
-    const followerCount = getAvailableFollowerCount(dictionary, entry, options);
-    const oneShotCounterEntries = getOneShotCounterEntries(dictionary, entry, options);
-    const nextEntry = {
-      ...entry,
-      followerCount,
-      oneShot: followerCount === 0,
-      oneShotReplyCount: oneShotCounterEntries.length
-    };
-    nextEntry.blunder =
-      !nextEntry.oneShot &&
-      !nextEntry.alternativeOneShot &&
-      (Boolean(entry.blunder) || nextEntry.oneShotReplyCount > 0);
-    if (nextEntry.blunder) {
-      nextEntry.alternativeOneShot = false;
-    }
-
-    options.entryStateCache.set(entry.key, nextEntry);
-    return nextEntry;
+    return entry;
   }
 
   function getCounterReplyWords(dictionary, entry, predicate, options) {
@@ -1160,8 +1132,8 @@
       return [];
     }
 
-    if (predicate === isOneShotReply && options && options.usedKeySet && options.usedKeySet.size) {
-      return getOneShotCounterEntries(dictionary, entry, options).map((reply) => reply.word);
+    if (options && options.usedKeySet && options.usedKeySet.size) {
+      return [];
     }
 
     const replies = [];
@@ -3969,7 +3941,7 @@ function initApp(core) {
   }
 
   function isOnlineLookupEnabled() {
-    return false;
+    return Boolean(getOpendictApiKey()) || canUseOpendictProxy();
   }
 
   function renderSearch(payload) {
@@ -4326,7 +4298,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-ui-speed-fix", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-lag-fix", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

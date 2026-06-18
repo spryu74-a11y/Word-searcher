@@ -223,9 +223,8 @@ function searchDictionary(options) {
     searchOptions
   );
   const skipCounterWords =
-    !searchOptions.hasUsedWords &&
-    !searchOptions.forceDynamic &&
-    collected.total >= COUNTER_WORDS_SKIP_THRESHOLD;
+    searchOptions.hasUsedWords ||
+    (!searchOptions.forceDynamic && collected.total >= COUNTER_WORDS_SKIP_THRESHOLD);
 
   return {
     queryInfo,
@@ -363,12 +362,21 @@ function includeExactCandidates(candidates, exactWord, exactReading) {
 }
 
 function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
-  if (candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD) {
-    const filteredCandidates = options.hasUsedWords
-      ? candidates.filter((index) => !isUsedIndex(index, options))
-      : candidates;
+  if (options.hasUsedWords) {
     return collectResultsFast(
-      filteredCandidates,
+      candidates.filter((index) => !isUsedIndex(index, options)),
+      oneShotOnly,
+      pageSize,
+      page,
+      exactWord,
+      exactReading,
+      options
+    );
+  }
+
+  if (candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD) {
+    return collectResultsFast(
+      candidates,
       oneShotOnly,
       pageSize,
       page,
@@ -562,7 +570,7 @@ function getEntryState(index, options) {
   let oneShotReplyCount = Number(entry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
   let alternativeOneShotReplyCount = Number(entry[ENTRY_ALTERNATIVE_REPLY_COUNT]) || 0;
 
-  if (options.hasUsedWords || index >= baseEntries.length) {
+  if (index >= baseEntries.length) {
     followerCount = getAvailableFollowerCount(index, options);
     const oneShotCounters = getOneShotCounterIndices(index, options);
     oneShot = followerCount === 0;
@@ -596,7 +604,7 @@ function getEntryState(index, options) {
 }
 
 function getAvailableFollowerCount(index, options) {
-  if (!options.hasUsedWords && index < baseEntries.length) {
+  if (index < baseEntries.length) {
     return Number(getPackedEntry(index)[ENTRY_FOLLOWER_COUNT]) || 0;
   }
   if (options.followerCache.has(index)) {
