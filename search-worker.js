@@ -686,8 +686,9 @@ function getEntryState(index, options) {
 }
 
 function getAvailableFollowerCount(index, options) {
-  if (index < baseEntries.length && !options.hasUsedWords) {
-    return Number(getPackedEntry(index)[ENTRY_FOLLOWER_COUNT]) || 0;
+  const staticFollowerCount = getStaticFollowerCount(index);
+  if (!options.hasUsedWords || staticFollowerCount > getUsedKeyCount(options)) {
+    return staticFollowerCount;
   }
   if (options.followerCache.has(index)) {
     return options.followerCache.get(index);
@@ -721,6 +722,9 @@ function getOneShotCounterIndices(index, options) {
         return;
       }
       seen.add(replyIndex);
+      if (!canBecomeOneShot(replyIndex, options)) {
+        return;
+      }
       if (getAvailableFollowerCount(replyIndex, options) === 0) {
         replies.push(replyIndex);
       }
@@ -1130,6 +1134,18 @@ function getCustomIndices() {
 
 function isUsedIndex(index, options) {
   return Boolean(options.hasUsedWords && options.usedKeySet.has(entryKey(index)));
+}
+
+function getStaticFollowerCount(index) {
+  return Number(getPackedEntry(index)[ENTRY_FOLLOWER_COUNT]) || 0;
+}
+
+function getUsedKeyCount(options) {
+  return options && options.usedKeySet ? options.usedKeySet.size : 0;
+}
+
+function canBecomeOneShot(index, options) {
+  return getStaticFollowerCount(index) <= getUsedKeyCount(options);
 }
 
 function createPlayedOptions(options, playedIndex) {

@@ -1081,8 +1081,9 @@
   }
 
   function getAvailableFollowerCount(dictionary, entry, options) {
-    if (!options || !options.usedKeySet || !options.usedKeySet.size) {
-      return Number(entry && entry.followerCount) || 0;
+    const staticFollowerCount = getStaticFollowerCount(entry);
+    if (!options || !options.usedKeySet || !options.usedKeySet.size || staticFollowerCount > getUsedKeyCount(options)) {
+      return staticFollowerCount;
     }
     if (!options.followerCountCache) {
       options.followerCountCache = new Map();
@@ -1124,6 +1125,9 @@
           continue;
         }
         seen.add(reply.key);
+        if (!canBecomeOneShotEntry(reply, options)) {
+          continue;
+        }
         if (getAvailableFollowerCount(dictionary, reply, options) === 0) {
           replies.push(reply);
         }
@@ -1159,6 +1163,18 @@
     };
     options.stateCache.set(entry.key, state);
     return state;
+  }
+
+  function getStaticFollowerCount(entry) {
+    return Number(entry && entry.followerCount) || 0;
+  }
+
+  function getUsedKeyCount(options) {
+    return options && options.usedKeySet ? options.usedKeySet.size : 0;
+  }
+
+  function canBecomeOneShotEntry(entry, options) {
+    return getStaticFollowerCount(entry) <= getUsedKeyCount(options);
   }
 
   function getCounterReplyWords(dictionary, entry, predicate, options) {
@@ -4472,7 +4488,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-used-dynamic-icons", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-fast-used-search", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
