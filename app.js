@@ -1706,6 +1706,10 @@ function initApp(core) {
     }
 
     if (message.type === "onlineAppendResult") {
+      if (message.id === state.searchRequestId) {
+        clearSearchWatchdog();
+        state.searchInFlight = false;
+      }
       handleOnlineAppendResult(message);
       return;
     }
@@ -1965,18 +1969,24 @@ function initApp(core) {
     }
 
     const isPreload = Boolean(lookup && lookup.preload);
+    if (!isPreload && !isCurrentOnlineLookup(lookup)) {
+      return;
+    }
+    const requestId = ++state.requestId;
     if (!isPreload) {
       state.workerReady = false;
-      state.searchInFlight = false;
+      state.searchInFlight = true;
       clearSearchWatchdog();
+      state.searchRequestId = requestId;
       state.page = 1;
       setBusy(true, "검색중...");
+      startSearchWatchdog(requestId);
     } else {
       updateOnlineState("한방 반영중");
     }
     state.worker.postMessage({
       type: "appendOnlineCandidates",
-      id: ++state.requestId,
+      id: requestId,
       words,
       target: lookup.target,
       lookup: {
@@ -2001,6 +2011,12 @@ function initApp(core) {
 
     const selectedWords = Array.isArray(message.words) ? message.words : [];
     const isPreload = Boolean(message.lookup && message.lookup.preload);
+    if (!isPreload && !isCurrentOnlineLookup(message.lookup)) {
+      setBusy(false, "검색 완료");
+      updateOnlineState("대기");
+      scheduleSearch(0);
+      return;
+    }
     if (!selectedWords.length) {
       if (isPreload) {
         updateOnlineState((message.lookup && message.lookup.candidateCount) ? "한방 준비됨" : "한방 미발견");
@@ -2051,6 +2067,7 @@ function initApp(core) {
   }
 
   function scheduleSearch(delay, resetPage) {
+    abortOnlineLookup();
     if (resetPage) {
       state.page = 1;
       animateResultListToTop();
@@ -2337,6 +2354,9 @@ function initApp(core) {
       .then((words) => expandOnlineWordsForLookup(words, lookup, controller && controller.signal))
       .then((words) => {
         if (lookupId !== state.onlineLookupId) {
+          return;
+        }
+        if (!isCurrentOnlineLookup(lookup)) {
           return;
         }
         if (!words.length) {
