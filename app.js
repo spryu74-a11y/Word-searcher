@@ -1516,6 +1516,7 @@ function initApp(core) {
   const ONLINE_STORAGE_KEY = "kkung-online-dictionary-v8";
   const USED_WORDS_STORAGE_KEY = "kkung-used-words-v1";
   const USED_WORD_CONTROLS_STORAGE_KEY = "kkung-used-word-controls-v1";
+  const STATIC_WORD_PACK_MODE = true;
   const OPENDICT_API_KEY_SESSION_STORAGE_KEY = "kkung-opendict-api-key-session-v1";
   const ONLINE_PREFIX_CACHE_STORAGE_KEY = "kkung-online-prefix-cache-v16";
   const ONLINE_ONESHOT_PRELOAD_STORAGE_KEY = "kkung-online-oneshot-preload-v3";
@@ -1615,7 +1616,7 @@ function initApp(core) {
     english: 0,
     sources: ["fallback"]
   };
-  const initialOnlineText = readLocalStorage(ONLINE_STORAGE_KEY, "");
+  const initialOnlineText = STATIC_WORD_PACK_MODE ? "" : readLocalStorage(ONLINE_STORAGE_KEY, "");
   const initialOnlineWords = parseOnlineWords(initialOnlineText);
 
   const state = {
@@ -1628,10 +1629,10 @@ function initApp(core) {
     onlineAttempts: new Set(),
     onlineMisses: new Set(),
     onlineAbortController: null,
-    onlinePrefixCache: loadOnlinePrefixCache(),
+    onlinePrefixCache: STATIC_WORD_PACK_MODE ? new Map() : loadOnlinePrefixCache(),
     onlinePrefixRequests: new Map(),
     onlinePrefixSaveTimer: 0,
-    onlineOneShotPreloadMeta: loadOnlineOneShotPreloadMeta(),
+    onlineOneShotPreloadMeta: STATIC_WORD_PACK_MODE ? { checkedAt: 0, count: 0 } : loadOnlineOneShotPreloadMeta(),
     onlineOneShotPreloadId: 0,
     onlineOneShotPreloadStarted: false,
     onlineLookupId: 0,
@@ -1687,7 +1688,7 @@ function initApp(core) {
           `KO ${formatNumber(message.defaultMeta.korean)} / EN ${formatNumber(message.defaultMeta.english)} / 추가 ${formatNumber(message.defaultMeta.extra)}`;
       }
       updateStats(message.stats);
-      setBusy(false, `인덱스 ${formatMs(message.stats.buildMs)}`);
+      setBusy(false, "단어팩 준비됨");
       if (state.pendingSearch || String(elements.queryInput.value || "").trim()) {
         scheduleSearch(0);
       }
@@ -1943,7 +1944,7 @@ function initApp(core) {
     reader.readAsText(file, "utf-8");
   });
 
-  renderEmpty("단어장 인덱스를 만들고 있습니다");
+  renderEmpty("단어팩을 준비하고 있습니다");
   rebuildDictionary();
   window.setInterval(() => {
     const currentQuery = elements.queryInput.value;
@@ -1962,7 +1963,7 @@ function initApp(core) {
   function rebuildDictionary() {
     abortOnlineLookup();
     clearSearchWatchdog();
-    const extraText = [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText, state.onlineText]
+    const extraText = [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText]
       .filter(Boolean)
       .join("\n");
     state.workerReady = false;
@@ -1970,7 +1971,7 @@ function initApp(core) {
     state.page = 1;
     state.searchRequestId = 0;
     state.pendingSearch = true;
-    setBusy(true, "인덱스 생성중");
+    setBusy(true, "단어팩 준비중");
     state.worker.postMessage({
       type: "buildDefault",
       id: ++state.requestId,
@@ -1979,6 +1980,9 @@ function initApp(core) {
   }
 
   function appendOnlineCandidates(words, lookup) {
+    if (STATIC_WORD_PACK_MODE) {
+      return;
+    }
     if (!Array.isArray(words) || !words.length) {
       return;
     }
@@ -2073,7 +2077,7 @@ function initApp(core) {
     }
 
     if (!isPreload) {
-      setBusy(false, `인덱스 ${formatMs(message.stats && message.stats.buildMs)}`);
+      setBusy(false, "단어팩 준비됨");
     } else {
       elements.buildState.textContent = "한방 준비됨";
     }
@@ -2326,6 +2330,9 @@ function initApp(core) {
   }
 
   function maybeRunOnlineLookup(payload) {
+    if (STATIC_WORD_PACK_MODE) {
+      return;
+    }
     if (!isOnlineLookupEnabled() || !payload) {
       return;
     }
@@ -2404,6 +2411,9 @@ function initApp(core) {
   }
 
   function getOnlineSupplementTarget(payload) {
+    if (STATIC_WORD_PACK_MODE) {
+      return "";
+    }
     if (elements.oneShotOnly.checked) {
       return payload.queryInfo && payload.queryInfo.reading ? "oneShot" : "";
     }
@@ -2817,6 +2827,9 @@ function initApp(core) {
   }
 
   function maybePreloadOnlineOneShots() {
+    if (STATIC_WORD_PACK_MODE) {
+      return;
+    }
     if (state.onlineOneShotPreloadStarted || !state.workerReady || !isOnlineLookupEnabled()) {
       return;
     }
@@ -4019,6 +4032,10 @@ function initApp(core) {
   }
 
   function updateOnlineState(status) {
+    if (STATIC_WORD_PACK_MODE) {
+      state.onlineStatus = "정적 단어팩";
+      return state.onlineStatus;
+    }
     if (typeof status === "string") {
       state.onlineStatus = status;
     } else if (!state.onlineStatus) {
@@ -4059,7 +4076,7 @@ function initApp(core) {
   }
 
   function isOnlineLookupEnabled() {
-    return typeof fetch === "function";
+    return !STATIC_WORD_PACK_MODE && typeof fetch === "function";
   }
 
   function renderStartScreen() {
@@ -4141,7 +4158,7 @@ function initApp(core) {
     elements.resultMeta.textContent = payload.total
       ? `${formatNumber(firstResult)}-${formatNumber(lastResult)} / ${formatNumber(payload.total)}개 · ${formatNumber(payload.page)}/${formatNumber(payload.pageCount)}쪽`
       : "0개";
-    elements.buildState.textContent = `검색 ${formatMs(payload.elapsedMs)}`;
+    elements.buildState.textContent = "검색 완료";
     elements.resultList.textContent = "";
     renderPager(payload);
     updateBackToTop();
@@ -4485,7 +4502,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-stop-online-loop", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-static-wordpack", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
