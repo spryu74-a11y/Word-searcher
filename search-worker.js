@@ -163,7 +163,7 @@ async function loadShards(starts) {
     return;
   }
   const uniqueStarts = Array.from(new Set((starts || []).filter(Boolean)));
-  await Promise.all(uniqueStarts.map((start) => loadShard(start)));
+  await Promise.all(uniqueStarts.map((start) => loadShard(start).catch(() => {})));
 }
 
 async function loadShard(start) {
@@ -199,6 +199,10 @@ async function loadShard(start) {
         }
         baseBuckets[start] = indices;
         return indices;
+      })
+      .catch((err) => {
+        shardPromises.delete(start);
+        throw err;
       });
     shardPromises.set(start, request);
   }
