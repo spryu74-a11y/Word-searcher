@@ -419,7 +419,9 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
   const categoryOrdered = oneShotOnly
     ? oneShots.concat(alternatives, safeConnections, blunders)
     : safeConnections.concat(alternatives, oneShots, blunders);
-  const ordered = pinExactMatches(categoryOrdered, exactWord, exactReading);
+  const ordered = oneShotOnly
+    ? pinExactMatches(categoryOrdered, exactWord, exactReading)
+    : categoryOrdered;
   const size = Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT);
   const requestedPage = Math.floor(Number(page)) || 1;
   const pageCount = Math.max(1, Math.ceil(total / size));
@@ -474,7 +476,7 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
   const orderedIndices = oneShotOnly
     ? oneShotIndices.concat(alternativeIndices, connectionIndices, blunderIndices)
     : connectionIndices.concat(alternativeIndices, oneShotIndices, blunderIndices);
-  const pinnedIndices = shouldSort
+  const pinnedIndices = oneShotOnly && shouldSort
     ? pinExactMatchIndices(orderedIndices, exactWord, exactReading)
     : orderedIndices;
 

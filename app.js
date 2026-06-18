@@ -976,7 +976,9 @@
     const categoryOrdered = oneShotOnly
       ? oneShots.concat(alternatives, safeConnections, blunders)
       : safeConnections.concat(alternatives, oneShots, blunders);
-    const ordered = pinExactMatches(categoryOrdered, exactWord, exactReading);
+    const ordered = oneShotOnly
+      ? pinExactMatches(categoryOrdered, exactWord, exactReading)
+      : categoryOrdered;
     const requestedSize = Math.floor(Number(pageSize)) || DEFAULT_LIMIT;
     const requestedPage = Math.floor(Number(page)) || 1;
     const size = Math.max(1, requestedSize);
@@ -1619,7 +1621,7 @@ function initApp(core) {
     searchInFlight: false,
     pendingSearch: false,
     observedQuery: "",
-    showUsedControls: loadBooleanSetting(USED_WORD_CONTROLS_STORAGE_KEY, true),
+    showUsedControls: true,
     sourceMode: "starts",
     usedWordKeys: loadUsedWordKeys(),
     worker: createSearchWorker(core, {
@@ -2201,7 +2203,7 @@ function initApp(core) {
   }
 
   function setShowUsedControls(isVisible) {
-    state.showUsedControls = Boolean(isVisible);
+    state.showUsedControls = true;
     saveBooleanSetting(USED_WORD_CONTROLS_STORAGE_KEY, state.showUsedControls);
     applyUsedControlsVisibility();
     if (elements.settingsShowUsed) {
@@ -2225,7 +2227,7 @@ function initApp(core) {
   }
 
   function applyUsedControlsVisibility() {
-    document.body.classList.toggle("hide-used-controls", !state.showUsedControls);
+    document.body.classList.remove("hide-used-controls");
   }
 
   function filterSettings() {
@@ -4202,9 +4204,7 @@ function initApp(core) {
 
     const actions = document.createElement("div");
     actions.className = "message-actions";
-    if (state.showUsedControls) {
-      actions.appendChild(createUsedWordControl(entry, row));
-    }
+    actions.appendChild(createUsedWordControl(entry, row));
     actions.appendChild(copy);
 
     row.append(avatar, body, actions);
@@ -4326,7 +4326,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-used-fix", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-ui-speed-fix", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
@@ -4339,8 +4339,6 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
       ? dictionaryAssets
       : { fallbackText: dictionaryAssets };
   const fallbackDefaultText = assets.fallbackText || core.FALLBACK_DICTIONARY;
-  let defaultTextPromise = null;
-  let defaultMetaPromise = null;
   let listener = null;
   let dictionary = null;
   return {
@@ -4353,14 +4351,13 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
         try {
           if (message.type === "buildDefault") {
             const extraText = message.extraText || "";
-            const baseText = await getDefaultText();
+            const baseText = fallbackDefaultText || core.FALLBACK_DICTIONARY;
             dictionary = core.createDictionary(extraText ? `${baseText}\n${extraText}` : baseText);
             listener({
               data: {
                 type: "built",
                 id: message.id,
-                stats: dictionary.stats,
-                defaultMeta: await getDefaultMeta()
+                stats: dictionary.stats
               }
             });
             return;
@@ -4371,30 +4368,28 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
               data: {
                 type: "built",
                 id: message.id,
-                stats: dictionary.stats,
-                defaultMeta: await getDefaultMeta()
+                stats: dictionary.stats
               }
             });
             return;
           }
           if (message.type === "append") {
             if (!dictionary) {
-              dictionary = core.createDictionary(await getDefaultText());
+              dictionary = core.createDictionary(fallbackDefaultText || core.FALLBACK_DICTIONARY);
             }
             dictionary = core.extendDictionary(dictionary, message.text || "");
             listener({
               data: {
                 type: "built",
                 id: message.id,
-                stats: dictionary.stats,
-                defaultMeta: await getDefaultMeta()
+                stats: dictionary.stats
               }
             });
             return;
           }
           if (message.type === "appendOnlineCandidates") {
             if (!dictionary) {
-              dictionary = core.createDictionary(await getDefaultText());
+              dictionary = core.createDictionary(fallbackDefaultText || core.FALLBACK_DICTIONARY);
             }
             const selected = core.selectOnlineWords(
               dictionary,
@@ -4418,7 +4413,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
           }
           if (message.type === "search") {
             if (!dictionary) {
-              dictionary = core.createDictionary(await getDefaultText());
+              dictionary = core.createDictionary(fallbackDefaultText || core.FALLBACK_DICTIONARY);
             }
             const payload = core.searchDictionary(dictionary, message.options || {});
             listener({ data: { type: "searchResult", id: message.id, payload } });
@@ -4429,48 +4424,6 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
       }, 0);
     }
   };
-
-  function getDefaultText() {
-    if (!defaultTextPromise) {
-      defaultTextPromise = fetchFallbackText(assets.textUrl, fallbackDefaultText);
-    }
-    return defaultTextPromise;
-  }
-
-  function getDefaultMeta() {
-    if (!defaultMetaPromise) {
-      defaultMetaPromise = fetchFallbackJson(assets.metaUrl, null);
-    }
-    return defaultMetaPromise;
-  }
-}
-
-function fetchFallbackText(url, fallback) {
-  if (!url || typeof fetch !== "function") {
-    return Promise.resolve(fallback || "");
-  }
-  return fetch(url, { cache: "force-cache" })
-    .then((response) => {
-      if (!response.ok) {
-        throw new Error("fallback dictionary unavailable");
-      }
-      return response.text();
-    })
-    .catch(() => fallback || "");
-}
-
-function fetchFallbackJson(url, fallback) {
-  if (!url || typeof fetch !== "function") {
-    return Promise.resolve(fallback);
-  }
-  return fetch(url, { cache: "force-cache" })
-    .then((response) => {
-      if (!response.ok) {
-        throw new Error("fallback metadata unavailable");
-      }
-      return response.json();
-    })
-    .catch(() => fallback);
 }
 
 function copyText(text) {
