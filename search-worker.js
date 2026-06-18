@@ -216,6 +216,8 @@ function prefetchAllShards() {
   const concurrency = Math.min(8, starts.length);
   for (let i = 0; i < concurrency; i++) next();
 }
+
+async function buildRuntime(extraText) {
   const started = now();
   await ensureIndex();
   customEntries = [];
