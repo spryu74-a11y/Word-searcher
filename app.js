@@ -1574,7 +1574,6 @@ function initApp(core) {
     fileState: document.getElementById("fileState"),
     guildSearch: document.getElementById("guildSearch"),
     guildSettings: document.getElementById("guildSettings"),
-    invalidPreview: document.getElementById("invalidPreview"),
     oneShotOnly: document.getElementById("oneShotOnly"),
     panelBackdrop: document.getElementById("panelBackdrop"),
     queryInput: document.getElementById("queryInput"),
@@ -1991,12 +1990,11 @@ function initApp(core) {
     const requestId = ++state.requestId;
     if (!isPreload) {
       state.workerReady = false;
-      state.searchInFlight = true;
+      state.searchInFlight = false;
       clearSearchWatchdog();
-      state.searchRequestId = requestId;
+      state.searchRequestId = 0;
       state.page = 1;
       setBusy(true, "검색중...");
-      startSearchWatchdog(requestId);
     } else {
       updateOnlineState("한방 반영중");
     }
@@ -2324,7 +2322,6 @@ function initApp(core) {
     elements.statEn.textContent = formatNumber(stats.en);
     elements.statOneShot.textContent = formatNumber(stats.oneShot);
     elements.statAlt.textContent = formatNumber(stats.alternativeOneShot);
-    elements.invalidPreview.textContent = formatNumber(stats.invalid);
     elements.dictionaryState.textContent = `${formatNumber(stats.total)} 단어`;
   }
 
@@ -2411,7 +2408,7 @@ function initApp(core) {
       return payload.queryInfo && payload.queryInfo.reading ? "oneShot" : "";
     }
 
-    return payload.queryInfo && payload.queryInfo.reading ? "connection" : "";
+    return payload.queryInfo && payload.queryInfo.reading && !payload.total ? "connection" : "";
   }
 
   function getOnlineLookupInfo(payload, target) {
@@ -4488,7 +4485,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-fast-used-search", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-stop-online-loop", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
