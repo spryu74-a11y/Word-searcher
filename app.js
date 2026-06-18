@@ -1503,7 +1503,7 @@ function initApp(core) {
   const RESULT_PAGE_SIZE = 50;
   const TABLET_RESULT_PAGE_SIZE = 40;
   const MOBILE_RESULT_PAGE_SIZE = 25;
-  const ONE_SHOT_RESULT_PAGE_SIZE = 500;
+  const ONE_SHOT_RESULT_PAGE_SIZE = 120;
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
   const elements = {
@@ -4298,7 +4298,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-lag-fix", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-fast-sort", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
