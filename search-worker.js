@@ -43,6 +43,7 @@ let defaultMeta = null;
 let customEntries = [];
 let customByStart = new Map();
 let customByKey = new Map();
+let cachedCustomIndices = null;
 let runtimeStats = null;
 
 self.onmessage = (event) => {
@@ -209,6 +210,7 @@ async function buildRuntime(extraText) {
   customEntries = [];
   customByStart = new Map();
   customByKey = new Map();
+  cachedCustomIndices = null;
 
   const parsed = parseCustomEntries(extraText);
   for (const entry of parsed.entries) {
@@ -266,6 +268,7 @@ function appendOnlineCandidateWords(words, lookup) {
     ];
     customEntries.push(packed);
     customByKey.set(entry.key, index);
+    cachedCustomIndices = null;
     const bucket = customByStart.get(entry.start);
     if (bucket) {
       bucket.push(index);
@@ -598,48 +601,69 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     return collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options);
   }
 
-  const oneShots = [];
-  const alternatives = [];
-  const blunders = [];
-  const safeConnections = [];
-  let total = 0;
-
-  for (const index of candidates) {
-    const state = getEntryState(index, options);
-    total += 1;
-    if (state.oneShot) {
-      oneShots.push(state);
-    } else if (state.alternativeOneShot) {
-      alternatives.push(state);
-    } else if (state.blunder) {
-      blunders.push(state);
-    } else {
-      safeConnections.push(state);
-    }
-  }
-
-  sortSearchGroup(oneShots, exactWord, exactReading);
-  sortSearchGroup(alternatives, exactWord, exactReading);
-  sortConnectionGroup(safeConnections);
-  sortSearchGroup(blunders, exactWord, exactReading);
-
-  const categoryCounts = {
-    oneShot: oneShots.length,
-    alternativeOneShot: alternatives.length,
-    connection: safeConnections.length,
-    blunder: blunders.length
-  };
-  const categoryOrdered = oneShotOnly
-    ? oneShots.concat(alternatives, safeConnections, blunders)
-    : safeConnections.concat(alternatives, oneShots, blunders);
-  const ordered = oneShotOnly
-    ? pinExactMatches(categoryOrdered, exactWord, exactReading)
-    : categoryOrdered;
+  const total = candidates.length;
   const size = Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT);
   const requestedPage = Math.floor(Number(page)) || 1;
   const pageCount = Math.max(1, Math.ceil(total / size));
   const currentPage = Math.min(Math.max(1, requestedPage), pageCount);
   const start = (currentPage - 1) * size;
+
+  const oneShotIndices = [];
+  const alternativeIndices = [];
+  const blunderIndices = [];
+  const safeConnectionIndices = [];
+
+  const shouldRunDynamic = total <= LARGE_CANDIDATE_SORT_THRESHOLD;
+
+  for (const index of candidates) {
+    if (shouldRunDynamic) {
+      const followerCount = getAvailableFollowerCount(index, options);
+      if (followerCount === 0) {
+        oneShotIndices.push(index);
+        continue;
+      }
+      const replyOptions = createPlayedOptions(options, index);
+      if (checkHasOneShotCounter(index, replyOptions) || checkHasAltOneShotCounter(index, replyOptions)) {
+        blunderIndices.push(index);
+      } else {
+        const staticCat = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+        if (staticCat === CATEGORY_ALTERNATIVE) {
+          alternativeIndices.push(index);
+        } else {
+          safeConnectionIndices.push(index);
+        }
+      }
+    } else {
+      const staticCat = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      if (staticCat === CATEGORY_ONE_SHOT) oneShotIndices.push(index);
+      else if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
+      else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
+      else safeConnectionIndices.push(index);
+    }
+  }
+
+  sortIndexGroup(oneShotIndices, exactWord, exactReading);
+  sortIndexGroup(alternativeIndices, exactWord, exactReading);
+  sortIndexGroup(blunderIndices, exactWord, exactReading);
+  sortConnectionIndexGroup(safeConnectionIndices);
+
+  const categoryCounts = {
+    oneShot: oneShotIndices.length,
+    alternativeOneShot: alternativeIndices.length,
+    connection: safeConnectionIndices.length,
+    blunder: blunderIndices.length
+  };
+
+  const orderedIndices = oneShotOnly
+    ? oneShotIndices.concat(alternativeIndices, safeConnectionIndices, blunderIndices)
+    : safeConnectionIndices.concat(alternativeIndices, oneShotIndices, blunderIndices);
+
+  const pinnedIndices = oneShotOnly
+    ? pinExactMatchIndices(orderedIndices, exactWord, exactReading)
+    : orderedIndices;
+
+  const visibleIndices = pinnedIndices.slice(start, start + size);
+  const results = visibleIndices.map((index) => getEntryState(index, options));
 
   return {
     total,
@@ -647,7 +671,7 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     page: currentPage,
     pageSize: size,
     pageCount,
-    results: ordered.slice(start, start + size)
+    results
   };
 }
 
@@ -1285,6 +1309,42 @@ function forEachBucketIndex(start, callback) {
   }
 }
 
+function someInBucket(start, predicate) {
+  const base = baseBuckets[start] || EMPTY;
+  for (const index of base) {
+    if (predicate(index)) return true;
+  }
+  const custom = customByStart.get(start) || EMPTY;
+  for (const index of custom) {
+    if (baseByKey.has(entryKey(index))) continue;
+    if (predicate(index)) return true;
+  }
+  return false;
+}
+
+function checkHasOneShotCounter(index, options) {
+  for (const start of getAllowedAfter(index)) {
+    const found = someInBucket(start, (replyIndex) => {
+      if (replyIndex === index || isUsedIndex(replyIndex, options)) return false;
+      return getAvailableFollowerCount(replyIndex, options) === 0;
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
+function checkHasAltOneShotCounter(index, options) {
+  for (const start of getAllowedAfter(index)) {
+    const found = someInBucket(start, (replyIndex) => {
+      if (replyIndex === index || isUsedIndex(replyIndex, options)) return false;
+      const cat = Number(getPackedEntry(replyIndex)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      return cat === CATEGORY_ALTERNATIVE && getAvailableFollowerCount(replyIndex, options) > 0;
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
 function getIndexByKey(key) {
   const normalized = normalizeKey(key);
   if (!normalized) {
@@ -1297,11 +1357,13 @@ function getIndexByKey(key) {
 }
 
 function getCustomIndices() {
-  const indices = [];
-  for (let offset = 0; offset < customEntries.length; offset += 1) {
-    indices.push(baseEntries.length + offset);
+  if (!cachedCustomIndices) {
+    cachedCustomIndices = [];
+    for (let offset = 0; offset < customEntries.length; offset += 1) {
+      cachedCustomIndices.push(baseEntries.length + offset);
+    }
   }
-  return indices;
+  return cachedCustomIndices;
 }
 
 function isUsedIndex(index, options) {
