@@ -127,6 +127,7 @@ async function ensureIndex() {
         baseStats = payload.stats || createEmptyStats();
         defaultMeta = payload.meta || null;
         runtimeStats = { ...baseStats, buildMs: 0 };
+        prefetchAllShards();
         return payload;
       })
       .catch(() => loadFullIndex());
@@ -204,7 +205,17 @@ async function loadShard(start) {
   await shardPromises.get(start);
 }
 
-async function buildRuntime(extraText) {
+function prefetchAllShards() {
+  const starts = Object.keys(shardFiles);
+  if (!starts.length) return;
+  let idx = 0;
+  function next() {
+    if (idx >= starts.length) return;
+    loadShard(starts[idx++]).then(next, next);
+  }
+  const concurrency = Math.min(8, starts.length);
+  for (let i = 0; i < concurrency; i++) next();
+}
   const started = now();
   await ensureIndex();
   customEntries = [];
@@ -383,9 +394,14 @@ async function searchDictionary(options) {
       ? searchByReply(queryInfo.starts)
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
-  if (searchOptions.hasUsedWords || searchOptions.forceDynamic) {
+
+  const isDynamic = searchOptions.hasUsedWords || searchOptions.forceDynamic;
+
+  // For small sets in dynamic mode, load follower shards upfront (needed for categorization)
+  if (isDynamic && merged.length <= LARGE_CANDIDATE_SORT_THRESHOLD) {
     await loadShards(getAllowedAfterStartsForIndices(merged));
   }
+
   const collected = collectResults(
     merged,
     Boolean(options.oneShotOnly),
@@ -395,10 +411,18 @@ async function searchDictionary(options) {
     exactReading,
     searchOptions
   );
-  const skipCounterWords = false;
-  if (!skipCounterWords) {
-    await loadShards(getCounterShardStarts(collected.results));
+
+  // For large sets in dynamic mode, load follower shards only for visible entries
+  if (isDynamic && merged.length > LARGE_CANDIDATE_SORT_THRESHOLD) {
+    await loadShards(getAllowedAfterStartsForIndices(collected.visibleIndices));
   }
+
+  // Compute full states for visible entries (shards are now loaded)
+  const visibleStates = collected.visibleIndices.map((index) => getEntryState(index, searchOptions));
+
+  // Load counter shards for visible blunders, then build final results
+  await loadShards(getCounterShardStarts(visibleStates));
+  const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, false));
 
   return {
     queryInfo,
@@ -408,9 +432,7 @@ async function searchDictionary(options) {
     page: collected.page,
     pageSize: collected.pageSize,
     pageCount: collected.pageCount,
-    results: collected.results.map((state) =>
-      createSearchResultEntry(state, searchOptions, skipCounterWords)
-    ),
+    results,
     elapsedMs: elapsed(started)
   };
 }
@@ -663,7 +685,6 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     : orderedIndices;
 
   const visibleIndices = pinnedIndices.slice(start, start + size);
-  const results = visibleIndices.map((index) => getEntryState(index, options));
 
   return {
     total,
@@ -671,7 +692,7 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     page: currentPage,
     pageSize: size,
     pageCount,
-    results
+    visibleIndices
   };
 }
 
@@ -724,7 +745,7 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
   const pageCount = Math.max(1, Math.ceil(total / size));
   const currentPage = Math.min(Math.max(1, requestedPage), pageCount);
   const start = (currentPage - 1) * size;
-  const visible = pinnedIndices.slice(start, start + size).map((index) => getEntryState(index, options));
+  const visibleIndices = pinnedIndices.slice(start, start + size);
 
   return {
     total,
@@ -732,7 +753,7 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
     page: currentPage,
     pageSize: size,
     pageCount,
-    results: visible
+    visibleIndices
   };
 }
 
