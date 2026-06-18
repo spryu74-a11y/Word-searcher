@@ -24,6 +24,7 @@
   const TRAILING_RIEUL = 8;
   const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
   const DEFAULT_LIMIT = 260;
+  const LARGE_DYNAMIC_RECALC_THRESHOLD = 800;
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
     ["겨", "기다"],
@@ -938,12 +939,17 @@
     const blunders = [];
     const safeConnections = [];
     let total = 0;
+    const useStaticState =
+      options &&
+      options.usedKeySet &&
+      options.usedKeySet.size &&
+      candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD;
 
     for (const entry of candidates) {
       if (isUsedEntry(entry, options)) {
         continue;
       }
-      const resultEntry = getSearchEntryState(dictionary, entry, options);
+      const resultEntry = useStaticState ? entry : getSearchEntryState(dictionary, entry, options);
       total += 1;
       if (resultEntry.oneShot) {
         oneShots.push(resultEntry);
@@ -1627,7 +1633,7 @@ function initApp(core) {
   const dictionaryDrawerMedia = window.matchMedia(DICTIONARY_DRAWER_QUERY);
   const mobileMedia = window.matchMedia(MOBILE_QUERY);
 
-  elements.customDictionary.value = localStorage.getItem(CUSTOM_STORAGE_KEY) || "";
+  elements.customDictionary.value = readLocalStorage(CUSTOM_STORAGE_KEY, "");
   if (elements.opendictApiKey) {
     elements.opendictApiKey.value = loadOpendictApiKey();
   }
@@ -1638,7 +1644,15 @@ function initApp(core) {
   updateOnlineState();
   updateOpendictState();
 
-  state.worker.onmessage = (event) => {
+  attachWorkerHandlers(state.worker);
+
+  function attachWorkerHandlers(worker) {
+    worker.onmessage = handleWorkerMessage;
+    worker.onerror = handleWorkerError;
+    worker.onmessageerror = handleWorkerMessageError;
+  }
+
+  function handleWorkerMessage(event) {
     const message = event.data;
     if (message.type === "built") {
       state.workerReady = true;
@@ -1673,26 +1687,61 @@ function initApp(core) {
     }
 
     if (message.type === "error") {
+      if (recoverSearchWorker(message.message)) {
+        return;
+      }
       state.searchInFlight = false;
       setBusy(false, "오류");
       renderEmpty(message.message || "처리 중 오류가 났습니다");
     }
-  };
-  state.worker.onerror = (event) => {
+  }
+
+  function handleWorkerError(event) {
+    if (recoverSearchWorker(event && event.message)) {
+      return;
+    }
     state.workerReady = false;
     state.searchInFlight = false;
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
     const message = event && event.message ? event.message : "검색 엔진을 시작하지 못했습니다";
     renderEmpty(message);
-  };
-  state.worker.onmessageerror = () => {
+  }
+
+  function handleWorkerMessageError() {
+    if (recoverSearchWorker("worker message error")) {
+      return;
+    }
     state.workerReady = false;
     state.searchInFlight = false;
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
     renderEmpty("검색 결과를 읽지 못했습니다");
-  };
+  }
+
+  function recoverSearchWorker(reason) {
+    if (state.worker && state.worker.__isInlineFallback) {
+      return false;
+    }
+    if (state.worker && typeof state.worker.terminate === "function") {
+      state.worker.terminate();
+    }
+
+    state.worker = createInlineWorkerFallback(core, {
+      textUrl: defaultDictionaryTextUrl,
+      metaUrl: defaultDictionaryMetaUrl,
+      fallbackText: fallbackDefaultText
+    });
+    attachWorkerHandlers(state.worker);
+    state.workerReady = false;
+    state.searchInFlight = false;
+    state.pendingSearch = true;
+    state.page = 1;
+    setBusy(true, "검색 엔진 복구중");
+    renderEmpty("검색 엔진을 다시 시작하고 있습니다");
+    rebuildDictionary();
+    return true;
+  }
 
   document.querySelectorAll("[data-source-mode]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1826,7 +1875,7 @@ function initApp(core) {
   addMediaListener(mobileMedia, () => scheduleSearch(0, true));
 
   elements.applyDictionary.addEventListener("click", () => {
-    localStorage.setItem(CUSTOM_STORAGE_KEY, elements.customDictionary.value);
+    writeLocalStorage(CUSTOM_STORAGE_KEY, elements.customDictionary.value);
     rebuildDictionary();
   });
 
@@ -1848,11 +1897,13 @@ function initApp(core) {
     state.usedWordKeys.clear();
     abortOnlineLookup();
     window.clearTimeout(state.onlinePrefixSaveTimer);
-    localStorage.removeItem(CUSTOM_STORAGE_KEY);
-    localStorage.removeItem(ONLINE_STORAGE_KEY);
-    localStorage.removeItem(ONLINE_PREFIX_CACHE_STORAGE_KEY);
-    localStorage.removeItem(ONLINE_ONESHOT_PRELOAD_STORAGE_KEY);
-    localStorage.removeItem(USED_WORDS_STORAGE_KEY);
+    [
+      CUSTOM_STORAGE_KEY,
+      ONLINE_STORAGE_KEY,
+      ONLINE_PREFIX_CACHE_STORAGE_KEY,
+      ONLINE_ONESHOT_PRELOAD_STORAGE_KEY,
+      USED_WORDS_STORAGE_KEY
+    ].forEach(removeLocalStorage);
     elements.fileState.textContent = "없음";
     updateOnlineState();
     rebuildDictionary();
@@ -2381,13 +2432,39 @@ function initApp(core) {
     return uniqueOnlineWords(String(text || "").split(/\r?\n/));
   }
 
+  function readLocalStorage(key, fallback) {
+    try {
+      const value = localStorage.getItem(key);
+      return value === null ? fallback : value;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeLocalStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function removeLocalStorage(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Ignore storage policy errors; the in-memory state has already been reset.
+    }
+  }
+
   function normalizeUsedWordKey(value) {
     return String(value || "").trim().toLowerCase();
   }
 
   function loadUsedWordKeys() {
     try {
-      const raw = localStorage.getItem(USED_WORDS_STORAGE_KEY);
+      const raw = readLocalStorage(USED_WORDS_STORAGE_KEY, "");
       if (!raw) {
         return new Set();
       }
@@ -2402,34 +2479,22 @@ function initApp(core) {
   }
 
   function saveUsedWordKeys() {
-    try {
-      localStorage.setItem(USED_WORDS_STORAGE_KEY, JSON.stringify(Array.from(state.usedWordKeys)));
-    } catch {
-      // The visible checkbox state remains active for the current page even if storage is unavailable.
-    }
+    writeLocalStorage(USED_WORDS_STORAGE_KEY, JSON.stringify(Array.from(state.usedWordKeys)));
   }
 
   function loadBooleanSetting(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw === "true") {
-        return true;
-      }
-      if (raw === "false") {
-        return false;
-      }
-    } catch {
-      // Keep the fallback if persistent storage is unavailable.
+    const raw = readLocalStorage(key, "");
+    if (raw === "true") {
+      return true;
+    }
+    if (raw === "false") {
+      return false;
     }
     return Boolean(fallback);
   }
 
   function saveBooleanSetting(key, value) {
-    try {
-      localStorage.setItem(key, String(Boolean(value)));
-    } catch {
-      // The in-memory setting is still applied for the current session.
-    }
+    writeLocalStorage(key, String(Boolean(value)));
   }
 
   function setUsedWord(entry, isUsed) {
@@ -2538,7 +2603,7 @@ function initApp(core) {
 
   function loadOnlinePrefixCache() {
     try {
-      const raw = localStorage.getItem(ONLINE_PREFIX_CACHE_STORAGE_KEY);
+      const raw = readLocalStorage(ONLINE_PREFIX_CACHE_STORAGE_KEY, "");
       if (!raw) {
         return new Map();
       }
@@ -2619,7 +2684,7 @@ function initApp(core) {
       }));
 
     try {
-      localStorage.setItem(ONLINE_PREFIX_CACHE_STORAGE_KEY, JSON.stringify({ items }));
+      writeLocalStorage(ONLINE_PREFIX_CACHE_STORAGE_KEY, JSON.stringify({ items }));
     } catch {
       const compactItems = items.slice(0, Math.max(32, Math.floor(items.length / 2)));
       state.onlinePrefixCache = new Map(
@@ -2634,16 +2699,16 @@ function initApp(core) {
         ])
       );
       try {
-        localStorage.setItem(ONLINE_PREFIX_CACHE_STORAGE_KEY, JSON.stringify({ items: compactItems }));
+        writeLocalStorage(ONLINE_PREFIX_CACHE_STORAGE_KEY, JSON.stringify({ items: compactItems }));
       } catch {
-        localStorage.removeItem(ONLINE_PREFIX_CACHE_STORAGE_KEY);
+        removeLocalStorage(ONLINE_PREFIX_CACHE_STORAGE_KEY);
       }
     }
   }
 
   function loadOnlineOneShotPreloadMeta() {
     try {
-      const raw = localStorage.getItem(ONLINE_ONESHOT_PRELOAD_STORAGE_KEY);
+      const raw = readLocalStorage(ONLINE_ONESHOT_PRELOAD_STORAGE_KEY, "");
       if (!raw) {
         return { checkedAt: 0, count: 0 };
       }
@@ -2662,11 +2727,7 @@ function initApp(core) {
       checkedAt: Date.now(),
       count: Math.max(0, Number(count) || 0)
     };
-    try {
-      localStorage.setItem(ONLINE_ONESHOT_PRELOAD_STORAGE_KEY, JSON.stringify(state.onlineOneShotPreloadMeta));
-    } catch {
-      // The word cache itself is more important than this small freshness marker.
-    }
+    writeLocalStorage(ONLINE_ONESHOT_PRELOAD_STORAGE_KEY, JSON.stringify(state.onlineOneShotPreloadMeta));
   }
 
   function isOnlineOneShotPreloadFresh() {
@@ -3861,11 +3922,7 @@ function initApp(core) {
     state.onlineWords = merged.slice(-ONLINE_CACHE_MAX_WORDS);
     state.onlineWordSet = new Set(state.onlineWords.map((word) => word.toLowerCase()));
     state.onlineText = state.onlineWords.join("\n");
-    try {
-      localStorage.setItem(ONLINE_STORAGE_KEY, state.onlineText);
-    } catch {
-      // Keep the in-memory supplement active even if persistent storage is full.
-    }
+    writeLocalStorage(ONLINE_STORAGE_KEY, state.onlineText);
     return { additions, evictedCount };
   }
 
@@ -4264,42 +4321,81 @@ function initApp(core) {
 }
 
 function createSearchWorker(core, dictionaryAssets) {
-  const fallbackDefaultText =
-    (dictionaryAssets && dictionaryAssets.fallbackText) || core.FALLBACK_DICTIONARY;
   if (typeof Worker === "undefined") {
-    return createInlineWorkerFallback(core, fallbackDefaultText);
+    return createInlineWorkerFallback(core, dictionaryAssets);
   }
-  return new Worker(new URL("./search-worker.js?v=modern-search-custom-parse-20260617-nfcfix6", window.location.href));
+  try {
+    return new Worker(
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-used-fix", window.location.href)
+    );
+  } catch {
+    return createInlineWorkerFallback(core, dictionaryAssets);
+  }
 }
 
-function createInlineWorkerFallback(core, fallbackDefaultText) {
+function createInlineWorkerFallback(core, dictionaryAssets) {
+  const assets =
+    dictionaryAssets && typeof dictionaryAssets === "object"
+      ? dictionaryAssets
+      : { fallbackText: dictionaryAssets };
+  const fallbackDefaultText = assets.fallbackText || core.FALLBACK_DICTIONARY;
+  let defaultTextPromise = null;
+  let defaultMetaPromise = null;
   let listener = null;
   let dictionary = null;
   return {
+    __isInlineFallback: true,
     set onmessage(next) {
       listener = next;
     },
     postMessage(message) {
-      window.setTimeout(() => {
+      window.setTimeout(async () => {
         try {
           if (message.type === "buildDefault") {
             const extraText = message.extraText || "";
-            const baseText = fallbackDefaultText || core.FALLBACK_DICTIONARY;
+            const baseText = await getDefaultText();
             dictionary = core.createDictionary(extraText ? `${baseText}\n${extraText}` : baseText);
-            listener({ data: { type: "built", id: message.id, stats: dictionary.stats } });
+            listener({
+              data: {
+                type: "built",
+                id: message.id,
+                stats: dictionary.stats,
+                defaultMeta: await getDefaultMeta()
+              }
+            });
             return;
           }
           if (message.type === "build") {
             dictionary = core.createDictionary(message.text || "");
-            listener({ data: { type: "built", id: message.id, stats: dictionary.stats } });
+            listener({
+              data: {
+                type: "built",
+                id: message.id,
+                stats: dictionary.stats,
+                defaultMeta: await getDefaultMeta()
+              }
+            });
             return;
           }
           if (message.type === "append") {
+            if (!dictionary) {
+              dictionary = core.createDictionary(await getDefaultText());
+            }
             dictionary = core.extendDictionary(dictionary, message.text || "");
-            listener({ data: { type: "built", id: message.id, stats: dictionary.stats } });
+            listener({
+              data: {
+                type: "built",
+                id: message.id,
+                stats: dictionary.stats,
+                defaultMeta: await getDefaultMeta()
+              }
+            });
             return;
           }
           if (message.type === "appendOnlineCandidates") {
+            if (!dictionary) {
+              dictionary = core.createDictionary(await getDefaultText());
+            }
             const selected = core.selectOnlineWords(
               dictionary,
               message.words || [],
@@ -4321,6 +4417,9 @@ function createInlineWorkerFallback(core, fallbackDefaultText) {
             return;
           }
           if (message.type === "search") {
+            if (!dictionary) {
+              dictionary = core.createDictionary(await getDefaultText());
+            }
             const payload = core.searchDictionary(dictionary, message.options || {});
             listener({ data: { type: "searchResult", id: message.id, payload } });
           }
@@ -4330,6 +4429,48 @@ function createInlineWorkerFallback(core, fallbackDefaultText) {
       }, 0);
     }
   };
+
+  function getDefaultText() {
+    if (!defaultTextPromise) {
+      defaultTextPromise = fetchFallbackText(assets.textUrl, fallbackDefaultText);
+    }
+    return defaultTextPromise;
+  }
+
+  function getDefaultMeta() {
+    if (!defaultMetaPromise) {
+      defaultMetaPromise = fetchFallbackJson(assets.metaUrl, null);
+    }
+    return defaultMetaPromise;
+  }
+}
+
+function fetchFallbackText(url, fallback) {
+  if (!url || typeof fetch !== "function") {
+    return Promise.resolve(fallback || "");
+  }
+  return fetch(url, { cache: "force-cache" })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error("fallback dictionary unavailable");
+      }
+      return response.text();
+    })
+    .catch(() => fallback || "");
+}
+
+function fetchFallbackJson(url, fallback) {
+  if (!url || typeof fetch !== "function") {
+    return Promise.resolve(fallback);
+  }
+  return fetch(url, { cache: "force-cache" })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error("fallback metadata unavailable");
+      }
+      return response.json();
+    })
+    .catch(() => fallback);
 }
 
 function copyText(text) {
