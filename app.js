@@ -1604,7 +1604,7 @@ function initApp(core) {
   const MOBILE_RESULT_PAGE_SIZE = 25;
   const ONE_SHOT_RESULT_PAGE_SIZE = 120;
   const SEARCH_SLOW_NOTICE_MS = 8000;
-  const REQUIRED_SUPPLEMENT_WORDS = ["킷값"];
+  const REQUIRED_SUPPLEMENT_WORDS = [];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
   const elements = {
@@ -4539,7 +4539,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-sharded-index", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-sharded-index-lazy-custom", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

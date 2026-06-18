@@ -211,9 +211,8 @@ async function buildRuntime(extraText) {
   customByKey = new Map();
 
   const parsed = parseCustomEntries(extraText);
-  await loadShards(parsed.entries.map((entry) => entry.start));
   for (const entry of parsed.entries) {
-    if (baseByKey.has(entry.key) || customByKey.has(entry.key)) {
+    if (customByKey.has(entry.key)) {
       continue;
     }
     const index = baseEntries.length + customEntries.length;
@@ -236,39 +235,16 @@ async function buildRuntime(extraText) {
     }
   }
 
-  await loadShards(getAllowedAfterStartsForPackedEntries(customEntries));
-  for (let offset = 0; offset < customEntries.length; offset += 1) {
-    const index = baseEntries.length + offset;
-    const entry = customEntries[offset];
-    const followerCount = getAvailableFollowerCount(index, createSearchOptions({}));
-    entry[ENTRY_FOLLOWER_COUNT] = followerCount;
-    entry[ENTRY_CATEGORY] = followerCount === 0 ? CATEGORY_ONE_SHOT : CATEGORY_CONNECTION;
-  }
-
   runtimeStats = {
     ...(baseStats || createEmptyStats()),
     total: (baseStats ? baseStats.total : baseEntries.length) + customEntries.length,
     ko: (baseStats ? baseStats.ko : 0) + customEntries.filter((entry) => entry[ENTRY_LANGUAGE] === "k").length,
     en: (baseStats ? baseStats.en : 0) + customEntries.filter((entry) => entry[ENTRY_LANGUAGE] === "e").length,
-    oneShot:
-      (baseStats ? baseStats.oneShot : 0) +
-      customEntries.filter((entry) => entry[ENTRY_CATEGORY] === CATEGORY_ONE_SHOT).length,
+    oneShot: baseStats ? baseStats.oneShot : 0,
     invalid: (baseStats ? baseStats.invalid : 0) + parsed.invalid,
     custom: customEntries.length,
     buildMs: Math.round(now() - started)
   };
-}
-
-function getAllowedAfterStartsForPackedEntries(entries) {
-  const starts = new Set();
-  for (const entry of entries || []) {
-    const reading = String(entry && entry[ENTRY_READING] ? entry[ENTRY_READING] : "");
-    const end = reading[reading.length - 1];
-    for (const start of getAllowedStartSyllables(end)) {
-      starts.add(start);
-    }
-  }
-  return Array.from(starts);
 }
 
 function appendOnlineCandidateWords(words, lookup) {
@@ -1285,10 +1261,14 @@ function getBucket(start) {
   if (!custom.length) {
     return base;
   }
-  if (!base.length) {
-    return custom;
+  const visibleCustom = custom.filter((index) => !baseByKey.has(entryKey(index)));
+  if (!visibleCustom.length) {
+    return base;
   }
-  return base.concat(custom);
+  if (!base.length) {
+    return visibleCustom;
+  }
+  return base.concat(visibleCustom);
 }
 
 function forEachBucketIndex(start, callback) {
@@ -1298,6 +1278,9 @@ function forEachBucketIndex(start, callback) {
   }
   const custom = customByStart.get(start) || EMPTY;
   for (const index of custom) {
+    if (baseByKey.has(entryKey(index))) {
+      continue;
+    }
     callback(index);
   }
 }
