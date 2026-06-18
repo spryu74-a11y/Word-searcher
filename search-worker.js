@@ -69,11 +69,13 @@ async function handleMessage(message) {
     }
 
     if (message.type === "appendOnlineCandidates") {
+      await ensureIndex();
+      const selectedWords = appendOnlineCandidateWords(message.words || [], message.lookup || {});
       self.postMessage({
         type: "onlineAppendResult",
         id: message.id,
         stats: runtimeStats,
-        words: [],
+        words: selectedWords,
         lookup: message.lookup || {}
       });
       return;
@@ -167,6 +169,94 @@ async function buildRuntime(extraText) {
     custom: customEntries.length,
     buildMs: Math.round(now() - started)
   };
+}
+
+function appendOnlineCandidateWords(words, lookup) {
+  const parsed = parseCustomEntries(uniqueTextLines(words).join("\n"));
+  const selected = [];
+  for (const entry of parsed.entries) {
+    if (baseByKey.has(entry.key) || customByKey.has(entry.key) || !matchesLookupEntry(entry, lookup)) {
+      continue;
+    }
+    const index = baseEntries.length + customEntries.length;
+    const packed = [
+      entry.word,
+      entry.reading,
+      entry.language,
+      0,
+      0,
+      0,
+      CATEGORY_CONNECTION
+    ];
+    customEntries.push(packed);
+    customByKey.set(entry.key, index);
+    const bucket = customByStart.get(entry.start);
+    if (bucket) {
+      bucket.push(index);
+    } else {
+      customByStart.set(entry.start, [index]);
+    }
+    selected.push(entry.word);
+  }
+
+  if (selected.length) {
+    recalculateCustomEntries();
+  }
+  return selected;
+}
+
+function recalculateCustomEntries() {
+  const options = createSearchOptions({});
+  for (let offset = 0; offset < customEntries.length; offset += 1) {
+    const index = baseEntries.length + offset;
+    const entry = customEntries[offset];
+    const followerCount = getAvailableFollowerCount(index, options);
+    entry[ENTRY_FOLLOWER_COUNT] = followerCount;
+    entry[ENTRY_CATEGORY] = followerCount === 0 ? CATEGORY_ONE_SHOT : CATEGORY_CONNECTION;
+  }
+
+  runtimeStats = {
+    ...(baseStats || createEmptyStats()),
+    total: (baseStats ? baseStats.total : baseEntries.length) + customEntries.length,
+    ko: (baseStats ? baseStats.ko : 0) + customEntries.filter((entry) => entry[ENTRY_LANGUAGE] === "k").length,
+    en: (baseStats ? baseStats.en : 0) + customEntries.filter((entry) => entry[ENTRY_LANGUAGE] === "e").length,
+    oneShot:
+      (baseStats ? baseStats.oneShot : 0) +
+      customEntries.filter((entry) => entry[ENTRY_CATEGORY] === CATEGORY_ONE_SHOT).length,
+    alternativeOneShot: baseStats ? baseStats.alternativeOneShot : 0,
+    invalid: baseStats ? baseStats.invalid : 0,
+    custom: customEntries.length,
+    buildMs: 0
+  };
+}
+
+function uniqueTextLines(values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = String(value || "").trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
+}
+
+function matchesLookupEntry(entry, lookup) {
+  const exactKey = normalizeKey((lookup && lookup.exactWord) || "");
+  if (exactKey && entry.key === exactKey) {
+    return true;
+  }
+  if (!lookup || !Array.isArray(lookup.prefixes) || !lookup.prefixes.length) {
+    return true;
+  }
+  if (lookup.mode === "reply") {
+    return lookup.prefixes.includes(entry.start);
+  }
+  return lookup.prefixes.some((prefix) => entry.reading.startsWith(prefix));
 }
 
 function buildBaseKeyMap() {
@@ -469,8 +559,10 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
   if (shouldSort) {
     sortIndexGroup(oneShotIndices, exactWord, exactReading);
     sortIndexGroup(alternativeIndices, exactWord, exactReading);
-    sortConnectionIndexGroup(connectionIndices);
     sortIndexGroup(blunderIndices, exactWord, exactReading);
+  }
+  if (!oneShotOnly || shouldSort) {
+    sortConnectionIndexGroup(connectionIndices);
   }
 
   const categoryCounts = {

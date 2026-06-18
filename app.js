@@ -1525,8 +1525,6 @@ function initApp(core) {
     guildSettings: document.getElementById("guildSettings"),
     invalidPreview: document.getElementById("invalidPreview"),
     oneShotOnly: document.getElementById("oneShotOnly"),
-    opendictApiKey: document.getElementById("opendictApiKey"),
-    opendictState: document.getElementById("opendictState"),
     panelBackdrop: document.getElementById("panelBackdrop"),
     queryInput: document.getElementById("queryInput"),
     readingPreview: document.getElementById("readingPreview"),
@@ -1540,14 +1538,12 @@ function initApp(core) {
     settingsLanguage: document.getElementById("settingsLanguage"),
     settingsOneShotOnly: document.getElementById("settingsOneShotOnly"),
     settingsSearch: document.getElementById("settingsSearch"),
-    settingsChannel: document.getElementById("settingsChannel"),
     statEn: document.getElementById("statEn"),
     statKo: document.getElementById("statKo"),
     statAlt: document.getElementById("statAlt"),
     statOneShot: document.getElementById("statOneShot"),
     statTotal: document.getElementById("statTotal"),
     toggleDictionary: document.getElementById("toggleDictionary"),
-    clearOpendictKey: document.getElementById("clearOpendictKey"),
     backToTop: document.getElementById("backToTop")
   };
 
@@ -1569,13 +1565,14 @@ function initApp(core) {
     english: 0,
     sources: ["fallback"]
   };
-  const initialOnlineWords = [];
+  const initialOnlineText = readLocalStorage(ONLINE_STORAGE_KEY, "");
+  const initialOnlineWords = parseOnlineWords(initialOnlineText);
 
   const state = {
     dictionary: null,
     fileText: "",
     fileName: "",
-    onlineText: "",
+    onlineText: initialOnlineWords.join("\n"),
     onlineWords: initialOnlineWords,
     onlineWordSet: new Set(initialOnlineWords.map((word) => word.toLowerCase())),
     onlineAttempts: new Set(),
@@ -1614,9 +1611,6 @@ function initApp(core) {
   const mobileMedia = window.matchMedia(MOBILE_QUERY);
 
   elements.customDictionary.value = readLocalStorage(CUSTOM_STORAGE_KEY, "");
-  if (elements.opendictApiKey) {
-    elements.opendictApiKey.value = loadOpendictApiKey();
-  }
   syncSettingsControls();
   elements.defaultSourceMeta.textContent =
     `KO ${formatNumber(defaultMeta.korean)} / EN ${formatNumber(defaultMeta.english)} / 추가 ${formatNumber(defaultMeta.extra)}`;
@@ -1802,34 +1796,6 @@ function initApp(core) {
       scheduleSearch(0, true);
     });
   }
-  if (elements.opendictApiKey) {
-    elements.opendictApiKey.addEventListener("input", () => {
-      state.opendictProxyUnavailable = false;
-      saveOpendictApiKey(elements.opendictApiKey.value);
-      updateOpendictState();
-      if (getOpendictApiKey()) {
-        scheduleSearch(350, true);
-      }
-    });
-    elements.opendictApiKey.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") {
-        return;
-      }
-      event.preventDefault();
-      state.opendictProxyUnavailable = false;
-      saveOpendictApiKey(elements.opendictApiKey.value);
-      updateOpendictState();
-      scheduleSearch(0, true);
-    });
-    if (elements.clearOpendictKey) {
-      elements.clearOpendictKey.addEventListener("click", () => {
-        elements.opendictApiKey.value = "";
-        state.opendictProxyUnavailable = false;
-        saveOpendictApiKey("");
-        updateOpendictState();
-      });
-    }
-  }
   elements.resultPager.addEventListener("click", (event) => {
     const button = event.target.closest("[data-page]");
     if (!button) {
@@ -1929,7 +1895,7 @@ function initApp(core) {
   function rebuildDictionary() {
     abortOnlineLookup();
     clearSearchWatchdog();
-    const extraText = [elements.customDictionary.value, state.fileText]
+    const extraText = [elements.customDictionary.value, state.fileText, state.onlineText]
       .filter(Boolean)
       .join("\n");
     state.workerReady = false;
@@ -2191,9 +2157,6 @@ function initApp(core) {
     }
     if (elements.searchChannel) {
       elements.searchChannel.classList.toggle("active", !isSettingsSelected);
-    }
-    if (elements.settingsChannel) {
-      elements.settingsChannel.classList.toggle("active", Boolean(isSettingsSelected));
     }
   }
 
@@ -4000,7 +3963,7 @@ function initApp(core) {
   }
 
   function isOnlineLookupEnabled() {
-    return Boolean(getOpendictApiKey()) || Boolean(getOpendictProxyUrl());
+    return typeof fetch === "function";
   }
 
   function renderSearch(payload) {
@@ -4359,7 +4322,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-settings-api-counter", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-online-indexed", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
