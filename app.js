@@ -126,6 +126,7 @@
     "ethanol",
     "computer",
     "cookie",
+    "킷값",
     "시계",
     "시장",
     "신문",
@@ -947,9 +948,6 @@
       candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD;
 
     for (const entry of candidates) {
-      if (isUsedEntry(entry, options)) {
-        continue;
-      }
       const resultEntry = useStaticState ? entry : getSearchEntryState(dictionary, entry, options);
       total += 1;
       if (resultEntry.oneShot) {
@@ -1331,7 +1329,7 @@
     const seen = new Set();
     if (exactWord && dictionary.byKey) {
       const entry = dictionary.byKey.get(exactWord);
-      if (entry && !isUsedEntry(entry, options)) {
+      if (entry) {
         entries.push(entry);
         seen.add(entry.key);
       }
@@ -1340,7 +1338,7 @@
     if (exactReading && dictionary.byReading) {
       const readingEntries = dictionary.byReading.get(exactReading) || [];
       for (const entry of readingEntries) {
-        if (!seen.has(entry.key) && !isUsedEntry(entry, options)) {
+        if (!seen.has(entry.key)) {
           seen.add(entry.key);
           entries.push(entry);
         }
@@ -1508,6 +1506,7 @@ function initApp(core) {
   const MOBILE_RESULT_PAGE_SIZE = 25;
   const ONE_SHOT_RESULT_PAGE_SIZE = 120;
   const SEARCH_WATCHDOG_MS = 8000;
+  const REQUIRED_SUPPLEMENT_WORDS = ["킷값"];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
   const elements = {
@@ -1895,7 +1894,7 @@ function initApp(core) {
   function rebuildDictionary() {
     abortOnlineLookup();
     clearSearchWatchdog();
-    const extraText = [elements.customDictionary.value, state.fileText, state.onlineText]
+    const extraText = [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText, state.onlineText]
       .filter(Boolean)
       .join("\n");
     state.workerReady = false;
@@ -4322,7 +4321,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-online-indexed", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-settings-sidebar-kits", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

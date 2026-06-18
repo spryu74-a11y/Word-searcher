@@ -104,7 +104,7 @@ button {
   place-items: center;
   overflow: visible;
   border-radius: 50%;
-  background: transparent;
+  background: #313338;
   color: white;
   font-size: 18px;
   font-weight: 800;
@@ -115,10 +115,10 @@ button {
 }
 
 .guild-icon img {
-  width: 100%;
-  height: 100%;
-  border-radius: 0;
-  object-fit: contain;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .guild-icon.selected {
@@ -197,6 +197,10 @@ button {
   white-space: nowrap;
 }
 
+.server-title-settings {
+  display: none;
+}
+
 .server-header span,
 .header-status,
 .member-header span {
@@ -209,6 +213,21 @@ button {
   min-width: 0;
   overflow: auto;
   padding: 12px 8px;
+}
+
+.settings-sidebar-content {
+  display: none;
+}
+
+body.settings-channel .server-title-search,
+body.settings-channel .search-sidebar-content,
+body.settings-channel #dictionaryState {
+  display: none;
+}
+
+body.settings-channel .server-title-settings,
+body.settings-channel .settings-sidebar-content {
+  display: block;
 }
 
 .channel-category {

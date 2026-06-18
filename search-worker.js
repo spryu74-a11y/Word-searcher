@@ -1,6 +1,6 @@
 "use strict";
 
-const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260617";
+const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260618-kits";
 const DEFAULT_LIMIT = 260;
 const ENTRY_WORD = 0;
 const ENTRY_READING = 1;
@@ -451,18 +451,6 @@ function includeExactCandidates(candidates, exactWord, exactReading) {
 }
 
 function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
-  if (options.hasUsedWords) {
-    return collectResultsFast(
-      candidates.filter((index) => !isUsedIndex(index, options)),
-      oneShotOnly,
-      pageSize,
-      page,
-      exactWord,
-      exactReading,
-      options
-    );
-  }
-
   if (candidates.length >= LARGE_DYNAMIC_RECALC_THRESHOLD) {
     return collectResultsFast(
       candidates,
@@ -486,9 +474,6 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
   let total = 0;
 
   for (const index of candidates) {
-    if (isUsedIndex(index, options)) {
-      continue;
-    }
     const state = getEntryState(index, options);
     total += 1;
     if (state.oneShot) {

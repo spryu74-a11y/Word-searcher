@@ -11,7 +11,7 @@
       type="font/woff"
       crossorigin
     />
-    <link rel="stylesheet" href="./styles.css?v=offline-text-search-20260618-independent-settings" />
+    <link rel="stylesheet" href="./styles.css?v=offline-text-search-20260618-settings-sidebar-icon-fit" />
   </head>
   <body>
     <div class="discord-shell">
@@ -27,37 +27,58 @@
 
       <aside class="channel-sidebar" aria-label="채널">
         <header class="server-header">
-          <strong>끝말잇기 치트서버</strong>
+          <strong class="server-title-search">끝말잇기 치트서버</strong>
+          <strong class="server-title-settings">설정</strong>
           <span id="dictionaryState">단어장 로딩</span>
         </header>
 
         <nav class="channel-list">
-          <div class="channel-category">SEARCH</div>
-          <button class="channel-item active" id="searchChannel" type="button" data-search-channel>
-            <span>#</span>
-            <strong>한방검색</strong>
-          </button>
+          <div class="search-sidebar-content">
+            <div class="channel-category">SEARCH</div>
+            <button class="channel-item active" id="searchChannel" type="button" data-search-channel>
+              <span>#</span>
+              <strong>한방검색</strong>
+            </button>
 
-          <div class="channel-category">STATS</div>
-          <div class="stat-line">
-            <span>전체</span>
-            <strong id="statTotal">0</strong>
+            <div class="channel-category">STATS</div>
+            <div class="stat-line">
+              <span>전체</span>
+              <strong id="statTotal">0</strong>
+            </div>
+            <div class="stat-line">
+              <span>한국어</span>
+              <strong id="statKo">0</strong>
+            </div>
+            <div class="stat-line">
+              <span>영어</span>
+              <strong id="statEn">0</strong>
+            </div>
+            <div class="stat-line danger">
+              <span>한방</span>
+              <strong id="statOneShot">0</strong>
+            </div>
+            <div class="stat-line warning">
+              <span>대체</span>
+              <strong id="statAlt">0</strong>
+            </div>
           </div>
-          <div class="stat-line">
-            <span>한국어</span>
-            <strong id="statKo">0</strong>
-          </div>
-          <div class="stat-line">
-            <span>영어</span>
-            <strong id="statEn">0</strong>
-          </div>
-          <div class="stat-line danger">
-            <span>한방</span>
-            <strong id="statOneShot">0</strong>
-          </div>
-          <div class="stat-line warning">
-            <span>대체</span>
-            <strong id="statAlt">0</strong>
+
+          <div class="settings-sidebar-content">
+            <div class="channel-category">CONFIG</div>
+            <button class="channel-item active" type="button" data-focus-dictionary>
+              <span>#</span>
+              <strong>설정</strong>
+            </button>
+
+            <div class="channel-category">DATA</div>
+            <div class="stat-line">
+              <span>기본팩</span>
+              <strong>사용중</strong>
+            </div>
+            <div class="stat-line">
+              <span>추가 단어</span>
+              <strong>편집</strong>
+            </div>
           </div>
         </nav>
       </aside>
@@ -204,6 +225,6 @@
       <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener">CC BY-SA 2.0</a>
     </footer>
 
-    <script src="./app.js?v=modern-search-custom-parse-20260618-online-indexed"></script>
+    <script src="./app.js?v=modern-search-custom-parse-20260618-settings-sidebar-kits"></script>
   </body>
 </html>
