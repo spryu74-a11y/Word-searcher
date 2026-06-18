@@ -1685,6 +1685,19 @@ function initApp(core) {
       }
       clearSearchWatchdog();
       state.searchInFlight = false;
+      const currentQuery = String(elements.queryInput.value || "").trim();
+      const currentReading = core.toReading(currentQuery);
+      const resultReading = message.payload && message.payload.queryInfo ? message.payload.queryInfo.reading || "" : "";
+      if (!currentQuery) {
+        state.pendingSearch = false;
+        renderStartScreen();
+        return;
+      }
+      if (state.pendingSearch || currentReading !== resultReading) {
+        renderPendingSearch(currentQuery);
+        scheduleSearch(0, currentReading !== resultReading);
+        return;
+      }
       renderSearch(message.payload);
       if (state.pendingSearch) {
         scheduleSearch(0);
@@ -2043,11 +2056,26 @@ function initApp(core) {
       animateResultListToTop();
     }
     state.pendingSearch = true;
+    const query = String(elements.queryInput.value || "").trim();
+    if (query) {
+      renderPendingSearch(query);
+    } else if (state.workerReady) {
+      renderStartScreen();
+    }
     window.clearTimeout(state.searchTimer);
     state.searchTimer = window.setTimeout(runSearch, delay);
   }
 
   function runSearch() {
+    const query = String(elements.queryInput.value || "").trim();
+    if (!query) {
+      state.pendingSearch = false;
+      state.searchInFlight = false;
+      state.searchRequestId = 0;
+      clearSearchWatchdog();
+      renderStartScreen();
+      return;
+    }
     if (!state.workerReady) {
       state.pendingSearch = true;
       return;
@@ -2066,7 +2094,7 @@ function initApp(core) {
       type: "search",
       id: requestId,
       options: {
-        query: elements.queryInput.value,
+        query,
         sourceMode: state.sourceMode,
         oneShotOnly: elements.oneShotOnly.checked,
         usedKeys: Array.from(state.usedWordKeys),
@@ -3999,6 +4027,73 @@ function initApp(core) {
 
   function isOnlineLookupEnabled() {
     return typeof fetch === "function";
+  }
+
+  function renderStartScreen() {
+    state.page = 1;
+    elements.readingPreview.textContent = "-";
+    elements.allowedPreview.textContent = "-";
+    elements.resultMeta.textContent = "준비됨";
+    elements.resultPager.hidden = true;
+    updateBackToTop();
+    elements.resultList.textContent = "";
+
+    const row = document.createElement("div");
+    row.className = "empty-message start-message";
+    const avatar = document.createElement("div");
+    avatar.className = "word-avatar";
+    avatar.textContent = "#";
+    const body = document.createElement("div");
+    body.className = "message-body start-empty";
+
+    const title = document.createElement("strong");
+    title.textContent = "빠른 검색";
+    const chips = document.createElement("div");
+    chips.className = "start-chips";
+    for (const value of ["값", "킷", "릇", "늠", "즘", "튬"]) {
+      const button = document.createElement("button");
+      button.className = "start-chip";
+      button.type = "button";
+      button.textContent = value;
+      button.addEventListener("click", () => {
+        elements.queryInput.value = value;
+        state.observedQuery = value;
+        elements.queryInput.focus();
+        scheduleSearch(0, true);
+      });
+      chips.appendChild(button);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "start-meta";
+    meta.textContent = "자주 막히는 시작 글자";
+    body.append(title, chips, meta);
+    row.append(avatar, body);
+    elements.resultList.appendChild(row);
+  }
+
+  function renderPendingSearch(query) {
+    const queryInfo = core.getQueryInfo(query, state.sourceMode);
+    elements.readingPreview.textContent = queryInfo.reading || "-";
+    elements.allowedPreview.textContent =
+      state.sourceMode === "reply"
+        ? queryInfo.starts.join(", ") || "-"
+        : queryInfo.display || "-";
+    elements.resultMeta.textContent = "검색중";
+    elements.buildState.textContent = "검색중...";
+    elements.resultPager.hidden = true;
+    updateBackToTop();
+    elements.resultList.textContent = "";
+    const row = document.createElement("div");
+    row.className = "empty-message pending-message";
+    const avatar = document.createElement("div");
+    avatar.className = "word-avatar";
+    avatar.textContent = "#";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.textContent = "검색중...";
+    row.append(avatar, body);
+    elements.resultList.appendChild(row);
   }
 
   function renderSearch(payload) {

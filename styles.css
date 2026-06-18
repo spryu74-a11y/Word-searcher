@@ -103,13 +103,12 @@ button {
   aspect-ratio: 1;
   place-items: center;
   overflow: visible;
-  border-radius: 50%;
+  border-radius: 16px;
   background: #313338;
   color: #dbdee1;
   font-size: 18px;
   font-weight: 800;
   transition:
-    border-radius 0.18s ease,
     background 0.18s ease,
     color 0.18s ease;
 }
@@ -140,7 +139,6 @@ button {
 
 @media (hover: hover) and (pointer: fine) {
   .guild-icon:hover {
-    border-radius: 16px;
     background: #5865f2;
     color: white;
   }
@@ -738,6 +736,46 @@ body.hide-used-controls .message-actions {
   color: var(--muted);
 }
 
+.start-message {
+  padding-top: 18px;
+}
+
+.start-empty {
+  display: grid;
+  gap: 10px;
+}
+
+.start-empty > strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.start-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.start-chip {
+  min-width: 44px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  background: #35373c;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.start-chip:hover {
+  background: #404249;
+}
+
+.start-meta {
+  color: var(--quiet);
+  font-size: 12px;
+}
+
 .wordrow-fallback a {
   color: var(--text);
   font-weight: 800;
@@ -1270,12 +1308,12 @@ body.settings-channel .member-panel {
 
   .guild-icon {
     width: 44px;
-    border-radius: 50%;
+    border-radius: 16px;
     font-size: 16px;
   }
 
   .guild-icon.selected {
-    border-radius: 14px;
+    border-radius: 16px;
   }
 
   .guild-icon::before {
@@ -1566,7 +1604,7 @@ body.settings-channel .member-panel {
   .guild-icon:hover {
     background: #313338;
     color: #dbdee1;
-    border-radius: 50%;
+    border-radius: 16px;
   }
 
   .guild-icon.selected:hover {
