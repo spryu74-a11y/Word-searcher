@@ -1065,6 +1065,21 @@
     return Boolean(entry && options && options.usedKeySet && options.usedKeySet.has(entry.key));
   }
 
+  function createPlayedOptions(options, entry) {
+    if (!entry || !entry.key || isUsedEntry(entry, options)) {
+      return options;
+    }
+    const usedKeySet = new Set((options && options.usedKeySet) || []);
+    usedKeySet.add(entry.key);
+    return {
+      ...(options || {}),
+      usedKeySet,
+      stateCache: new Map(),
+      followerCountCache: new Map(),
+      oneShotCounterCache: new Map()
+    };
+  }
+
   function getAvailableFollowerCount(dictionary, entry, options) {
     if (!options || !options.usedKeySet || !options.usedKeySet.size) {
       return Number(entry && entry.followerCount) || 0;
@@ -1093,9 +1108,6 @@
   }
 
   function getOneShotCounterEntries(dictionary, entry, options) {
-    if (!options || !options.usedKeySet || !options.usedKeySet.size) {
-      return [];
-    }
     if (!options.oneShotCounterCache) {
       options.oneShotCounterCache = new Map();
     }
@@ -1123,7 +1135,30 @@
   }
 
   function getSearchEntryState(dictionary, entry, options) {
-    return entry;
+    if (!entry || !options || !options.usedKeySet || !options.usedKeySet.size) {
+      return entry;
+    }
+    if (!options.stateCache) {
+      options.stateCache = new Map();
+    }
+    if (options.stateCache.has(entry.key)) {
+      return options.stateCache.get(entry.key);
+    }
+
+    const followerCount = getAvailableFollowerCount(dictionary, entry, options);
+    const replyOptions = createPlayedOptions(options, entry);
+    const oneShotReplyCount = getOneShotCounterEntries(dictionary, entry, replyOptions).length;
+    const state = {
+      ...entry,
+      followerCount,
+      oneShot: followerCount === 0,
+      alternativeOneShot: false,
+      alternativeOneShotReplyCount: 0,
+      oneShotReplyCount,
+      blunder: followerCount > 0 && oneShotReplyCount > 0
+    };
+    options.stateCache.set(entry.key, state);
+    return state;
   }
 
   function getCounterReplyWords(dictionary, entry, predicate, options) {
@@ -1131,6 +1166,7 @@
       return [];
     }
 
+    const replyOptions = createPlayedOptions(options, entry);
     const replies = [];
     const seen = new Set();
     for (const start of entry.allowedAfter) {
@@ -1139,10 +1175,10 @@
         if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
           break;
         }
-        if (reply.key === entry.key || seen.has(reply.key) || isUsedEntry(reply, options)) {
+        if (reply.key === entry.key || seen.has(reply.key) || isUsedEntry(reply, replyOptions)) {
           continue;
         }
-        const replyState = getSearchEntryState(dictionary, reply, options);
+        const replyState = getSearchEntryState(dictionary, reply, replyOptions);
         if (!predicate(replyState)) {
           continue;
         }
@@ -4321,7 +4357,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-settings-sidebar-kits", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-used-dynamic-icons", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

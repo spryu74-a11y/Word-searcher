@@ -646,11 +646,17 @@ function getEntryState(index, options) {
   let oneShotReplyCount = Number(entry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
   let alternativeOneShotReplyCount = Number(entry[ENTRY_ALTERNATIVE_REPLY_COUNT]) || 0;
 
-  if (index >= baseEntries.length) {
+  if (index >= baseEntries.length || options.hasUsedWords) {
     followerCount = getAvailableFollowerCount(index, options);
-    const oneShotCounters = getOneShotCounterIndices(index, options);
+    const replyOptions = createPlayedOptions(options, index);
+    const oneShotCounters = getOneShotCounterIndices(index, replyOptions);
     oneShot = followerCount === 0;
     oneShotReplyCount = oneShotCounters.length;
+    if (options.hasUsedWords) {
+      alternativeOneShot = false;
+      alternativeOneShotReplyCount = 0;
+      blunder = false;
+    }
     if (!oneShot && !alternativeOneShot && (blunder || oneShotReplyCount > 0)) {
       blunder = true;
     }
@@ -680,7 +686,7 @@ function getEntryState(index, options) {
 }
 
 function getAvailableFollowerCount(index, options) {
-  if (index < baseEntries.length) {
+  if (index < baseEntries.length && !options.hasUsedWords) {
     return Number(getPackedEntry(index)[ENTRY_FOLLOWER_COUNT]) || 0;
   }
   if (options.followerCache.has(index)) {
@@ -749,6 +755,7 @@ function getCounterReplyWords(state, predicate, options) {
   if (!state.blunder) {
     return [];
   }
+  const replyOptions = createPlayedOptions(options, state.index);
   const replies = [];
   const seen = new Set();
   for (const start of state.allowedAfter) {
@@ -756,10 +763,10 @@ function getCounterReplyWords(state, predicate, options) {
       if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
         return;
       }
-      if (replyIndex === state.index || seen.has(replyIndex) || isUsedIndex(replyIndex, options)) {
+      if (replyIndex === state.index || seen.has(replyIndex) || isUsedIndex(replyIndex, replyOptions)) {
         return;
       }
-      const replyState = getEntryState(replyIndex, options);
+      const replyState = getEntryState(replyIndex, replyOptions);
       if (!predicate(replyState)) {
         return;
       }
@@ -1123,6 +1130,23 @@ function getCustomIndices() {
 
 function isUsedIndex(index, options) {
   return Boolean(options.hasUsedWords && options.usedKeySet.has(entryKey(index)));
+}
+
+function createPlayedOptions(options, playedIndex) {
+  const playedKey = entryKey(playedIndex);
+  if (!playedKey || isUsedIndex(playedIndex, options)) {
+    return options;
+  }
+  const usedKeySet = new Set(options.usedKeySet || []);
+  usedKeySet.add(playedKey);
+  return {
+    ...options,
+    usedKeySet,
+    hasUsedWords: true,
+    stateCache: new Map(),
+    followerCache: new Map(),
+    oneShotCounterCache: new Map()
+  };
 }
 
 function getPackedEntry(index) {

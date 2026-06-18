@@ -102,7 +102,7 @@ button {
   width: 48px;
   aspect-ratio: 1;
   place-items: center;
-  overflow: visible;
+  overflow: hidden;
   border-radius: 50%;
   background: #313338;
   color: white;
@@ -110,13 +110,13 @@ button {
   font-weight: 800;
   transition:
     border-radius 0.18s ease,
-    background 0.18s ease,
-    transform 0.18s ease;
+    background 0.18s ease;
 }
 
 .guild-icon img {
-  width: calc(100% + 4px);
-  height: calc(100% + 4px);
+  display: block;
+  width: 100%;
+  height: 100%;
   border-radius: inherit;
   object-fit: cover;
 }
@@ -135,7 +135,7 @@ button {
 .guild-icon::before {
   content: "";
   position: absolute;
-  left: -12px;
+  left: 0;
   width: 4px;
   height: 0;
   border-radius: 0 4px 4px 0;
@@ -1265,7 +1265,7 @@ body.settings-channel .member-panel {
   }
 
   .guild-icon::before {
-    left: -7px;
+    left: 0;
   }
 
   .guild-icon.selected::before {
@@ -1550,7 +1550,7 @@ body.settings-channel .member-panel {
 
 @media (hover: none), (pointer: coarse) {
   .guild-icon:hover {
-    background: transparent;
+    background: #313338;
     border-radius: 50%;
   }
 
