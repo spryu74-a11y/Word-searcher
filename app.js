@@ -1642,6 +1642,7 @@ function initApp(core) {
     page: 1,
     requestId: 0,
     searchRequestId: 0,
+    searchSignature: "",
     searchTimer: 0,
     searchWatchdogTimer: 0,
     searchInFlight: false,
@@ -1702,22 +1703,18 @@ function initApp(core) {
       clearSearchWatchdog();
       state.searchInFlight = false;
       const currentQuery = String(elements.queryInput.value || "").trim();
-      const currentReading = core.toReading(currentQuery);
-      const resultReading = message.payload && message.payload.queryInfo ? message.payload.queryInfo.reading || "" : "";
       if (!currentQuery) {
         state.pendingSearch = false;
         renderStartScreen();
         return;
       }
-      if (state.pendingSearch || currentReading !== resultReading) {
+      if (getSearchSignature(currentQuery) !== state.searchSignature) {
         renderPendingSearch(currentQuery);
-        scheduleSearch(0, currentReading !== resultReading);
+        scheduleSearch(0, true);
         return;
       }
+      state.pendingSearch = false;
       renderSearch(message.payload);
-      if (state.pendingSearch) {
-        scheduleSearch(0);
-      }
       return;
     }
 
@@ -1970,6 +1967,7 @@ function initApp(core) {
     state.searchInFlight = false;
     state.page = 1;
     state.searchRequestId = 0;
+    state.searchSignature = "";
     state.pendingSearch = true;
     setBusy(true, "단어팩 준비중");
     state.worker.postMessage({
@@ -2107,6 +2105,7 @@ function initApp(core) {
       state.pendingSearch = false;
       state.searchInFlight = false;
       state.searchRequestId = 0;
+      state.searchSignature = "";
       clearSearchWatchdog();
       renderStartScreen();
       return;
@@ -2123,6 +2122,7 @@ function initApp(core) {
     state.pendingSearch = false;
     const requestId = ++state.requestId;
     state.searchRequestId = requestId;
+    state.searchSignature = getSearchSignature(query);
     state.searchInFlight = true;
     startSearchWatchdog(requestId);
     state.worker.postMessage({
@@ -2152,6 +2152,17 @@ function initApp(core) {
   function clearSearchWatchdog() {
     window.clearTimeout(state.searchWatchdogTimer);
     state.searchWatchdogTimer = 0;
+  }
+
+  function getSearchSignature(query) {
+    return [
+      core.toReading(query),
+      state.sourceMode,
+      elements.oneShotOnly.checked ? "1" : "0",
+      String(state.page),
+      String(getPageSize()),
+      Array.from(state.usedWordKeys).sort().join(",")
+    ].join("|");
   }
 
   function restartSearchWorker(label) {
