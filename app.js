@@ -1504,6 +1504,7 @@ function initApp(core) {
   const TABLET_RESULT_PAGE_SIZE = 40;
   const MOBILE_RESULT_PAGE_SIZE = 25;
   const ONE_SHOT_RESULT_PAGE_SIZE = 120;
+  const SEARCH_WATCHDOG_MS = 8000;
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
   const elements = {
@@ -1590,6 +1591,7 @@ function initApp(core) {
     requestId: 0,
     searchRequestId: 0,
     searchTimer: 0,
+    searchWatchdogTimer: 0,
     searchInFlight: false,
     pendingSearch: false,
     observedQuery: "",
@@ -1631,6 +1633,7 @@ function initApp(core) {
     if (message.type === "built") {
       state.workerReady = true;
       state.searchInFlight = false;
+      clearSearchWatchdog();
       if (message.defaultMeta) {
         elements.defaultSourceMeta.textContent =
           `KO ${formatNumber(message.defaultMeta.korean)} / EN ${formatNumber(message.defaultMeta.english)} / 추가 ${formatNumber(message.defaultMeta.extra)}`;
@@ -1647,6 +1650,7 @@ function initApp(core) {
       if (message.id !== state.searchRequestId) {
         return;
       }
+      clearSearchWatchdog();
       state.searchInFlight = false;
       renderSearch(message.payload);
       if (state.pendingSearch) {
@@ -1664,6 +1668,7 @@ function initApp(core) {
       if (recoverSearchWorker(message.message)) {
         return;
       }
+      clearSearchWatchdog();
       state.searchInFlight = false;
       setBusy(false, "오류");
       renderEmpty(message.message || "처리 중 오류가 났습니다");
@@ -1676,6 +1681,7 @@ function initApp(core) {
     }
     state.workerReady = false;
     state.searchInFlight = false;
+    clearSearchWatchdog();
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
     const message = event && event.message ? event.message : "검색 엔진을 시작하지 못했습니다";
@@ -1688,6 +1694,7 @@ function initApp(core) {
     }
     state.workerReady = false;
     state.searchInFlight = false;
+    clearSearchWatchdog();
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
     renderEmpty("검색 결과를 읽지 못했습니다");
@@ -1709,6 +1716,7 @@ function initApp(core) {
     attachWorkerHandlers(state.worker);
     state.workerReady = false;
     state.searchInFlight = false;
+    clearSearchWatchdog();
     state.pendingSearch = true;
     state.page = 1;
     setBusy(true, "검색 엔진 복구중");
@@ -1922,6 +1930,7 @@ function initApp(core) {
 
   function rebuildDictionary() {
     abortOnlineLookup();
+    clearSearchWatchdog();
     const extraText = [elements.customDictionary.value, state.fileText]
       .filter(Boolean)
       .join("\n");
@@ -1946,6 +1955,8 @@ function initApp(core) {
     const isPreload = Boolean(lookup && lookup.preload);
     if (!isPreload) {
       state.workerReady = false;
+      state.searchInFlight = false;
+      clearSearchWatchdog();
       state.page = 1;
       setBusy(true, "온라인 반영중");
     } else {
@@ -2051,6 +2062,7 @@ function initApp(core) {
     const requestId = ++state.requestId;
     state.searchRequestId = requestId;
     state.searchInFlight = true;
+    startSearchWatchdog(requestId);
     state.worker.postMessage({
       type: "search",
       id: requestId,
@@ -2063,6 +2075,40 @@ function initApp(core) {
         pageSize: getPageSize()
       }
     });
+  }
+
+  function startSearchWatchdog(requestId) {
+    clearSearchWatchdog();
+    state.searchWatchdogTimer = window.setTimeout(() => {
+      if (!state.searchInFlight || state.searchRequestId !== requestId) {
+        return;
+      }
+      restartSearchWorker("검색 재시작중");
+    }, SEARCH_WATCHDOG_MS);
+  }
+
+  function clearSearchWatchdog() {
+    window.clearTimeout(state.searchWatchdogTimer);
+    state.searchWatchdogTimer = 0;
+  }
+
+  function restartSearchWorker(label) {
+    clearSearchWatchdog();
+    if (state.worker && typeof state.worker.terminate === "function") {
+      state.worker.terminate();
+    }
+    state.worker = createSearchWorker(core, {
+      textUrl: defaultDictionaryTextUrl,
+      metaUrl: defaultDictionaryMetaUrl,
+      scriptUrl: defaultDictionaryScriptUrl,
+      fallbackText: fallbackDefaultText
+    });
+    attachWorkerHandlers(state.worker);
+    state.workerReady = false;
+    state.searchInFlight = false;
+    state.pendingSearch = true;
+    setBusy(true, label || "검색 재시작중");
+    rebuildDictionary();
   }
 
   function getPageSize() {
@@ -2267,7 +2313,7 @@ function initApp(core) {
     }
 
     abortOnlineLookup();
-    state.onlineAttempts.add(attemptKey);
+    rememberOnlineAttempt(attemptKey);
     state.onlineMisses.delete(attemptKey);
     const lookupId = ++state.onlineLookupId;
     const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -2383,10 +2429,25 @@ function initApp(core) {
     return `${lookup.target}:${lookup.mode}:${lookup.exactWord || ""}:${lookup.prefixes.join("|")}`;
   }
 
+  function rememberOnlineAttempt(attemptKey) {
+    if (!attemptKey) {
+      return;
+    }
+    state.onlineAttempts.add(attemptKey);
+    while (state.onlineAttempts.size > 256) {
+      const oldest = state.onlineAttempts.values().next().value;
+      state.onlineAttempts.delete(oldest);
+    }
+  }
+
   function markOnlineLookupMiss(lookup) {
     const attemptKey = (lookup && lookup.attemptKey) || getOnlineAttemptKey(lookup);
     if (attemptKey) {
       state.onlineMisses.add(attemptKey);
+      while (state.onlineMisses.size > 256) {
+        const oldest = state.onlineMisses.values().next().value;
+        state.onlineMisses.delete(oldest);
+      }
     }
     if (lookup && lookup.wasEmpty && isCurrentOnlineLookup(lookup)) {
       renderWordrowFallback(lookup);
@@ -3963,6 +4024,7 @@ function initApp(core) {
 
     if (!payload.results.length) {
       renderEmpty("조건에 맞는 단어가 없습니다");
+      maybeRunOnlineLookup(payload);
       return;
     }
 
@@ -3971,6 +4033,7 @@ function initApp(core) {
       fragment.appendChild(createResultNode(entry));
     }
     elements.resultList.appendChild(fragment);
+    maybeRunOnlineLookup(payload);
   }
 
   function renderPager(payload) {
@@ -4298,7 +4361,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-fast-sort", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-watchdog", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
