@@ -401,14 +401,8 @@ async function searchDictionary(options) {
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
 
-  const isDynamic = searchOptions.hasUsedWords || searchOptions.forceDynamic;
-
-  // For small sets in dynamic mode, load follower shards upfront (needed for categorization)
-  if (isDynamic && merged.length <= LARGE_CANDIDATE_SORT_THRESHOLD) {
-    await loadShards(getAllowedAfterStartsForIndices(merged));
-  }
-
-  const collected = collectResults(
+  // Always use static categorization for ordering (fast, no extra shard loads needed)
+  const collected = collectResultsFast(
     merged,
     Boolean(options.oneShotOnly),
     pageSize,
@@ -418,16 +412,18 @@ async function searchDictionary(options) {
     searchOptions
   );
 
-  // For large sets in dynamic mode, load follower shards only for visible entries
-  if (isDynamic && merged.length > LARGE_CANDIDATE_SORT_THRESHOLD) {
+  const isDynamic = searchOptions.hasUsedWords || searchOptions.forceDynamic;
+
+  // Load follower shards only for visible entries (not all candidates)
+  if (isDynamic) {
     await loadShards(getAllowedAfterStartsForIndices(collected.visibleIndices));
   }
 
-  // Compute full states for visible entries (shards are now loaded)
+  // Compute full dynamic states for visible entries (shards now loaded)
   const visibleStates = collected.visibleIndices.map((index) => getEntryState(index, searchOptions));
 
-  // Load counter shards for visible blunders, then build final results
-  await loadShards(getCounterShardStarts(visibleStates));
+  // Load counter shards in background — don't block the response
+  loadShards(getCounterShardStarts(visibleStates)).catch(() => {});
   const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, false));
 
   return {
