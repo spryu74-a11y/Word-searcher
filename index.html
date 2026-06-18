@@ -11,12 +11,12 @@
       type="font/woff"
       crossorigin
     />
-    <link rel="stylesheet" href="./styles.css?v=offline-text-search-20260617" />
+    <link rel="stylesheet" href="./styles.css?v=offline-text-search-20260618-settings-channel" />
   </head>
   <body>
     <div class="discord-shell">
       <aside class="guild-rail" aria-label="서버">
-        <button class="guild-icon guild-search selected" id="guildSearch" type="button" aria-label="검색기" title="검색기">
+        <button class="guild-icon guild-search selected" id="guildSearch" type="button" data-search-channel aria-label="검색기" title="검색기">
           <img src="./assets/search-server.png?v=original-assets-20260617" alt="" />
         </button>
         <div class="guild-separator" aria-hidden="true"></div>
@@ -33,9 +33,15 @@
 
         <nav class="channel-list">
           <div class="channel-category">SEARCH</div>
-          <button class="channel-item active" type="button">
+          <button class="channel-item active" id="searchChannel" type="button" data-search-channel>
             <span>#</span>
             <strong>한방검색</strong>
+          </button>
+
+          <div class="channel-category">SETTINGS</div>
+          <button class="channel-item" id="settingsChannel" type="button" data-focus-dictionary>
+            <span>#</span>
+            <strong>설정</strong>
           </button>
 
           <div class="channel-category">STATS</div>
@@ -162,6 +168,28 @@
               </select>
             </label>
           </div>
+
+          <div class="settings-section" data-settings-text="api 우리말샘 키 프록시">
+            <h3>API</h3>
+            <label class="settings-row settings-row-stack" for="opendictApiKey">
+              <span>우리말샘 API 키</span>
+              <input
+                id="opendictApiKey"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="32자리 키"
+              />
+            </label>
+            <div class="settings-row">
+              <span>API 상태</span>
+              <strong id="opendictState">대기</strong>
+            </div>
+            <div class="settings-row">
+              <span>API 키</span>
+              <button class="secondary-button settings-action-button" id="clearOpendictKey" type="button">지우기</button>
+            </div>
+          </div>
         </section>
 
         <section class="source-block">
@@ -203,6 +231,6 @@
       <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener">CC BY-SA 2.0</a>
     </footer>
 
-    <script src="./app.js?v=modern-search-custom-parse-20260618-search-watchdog"></script>
+    <script src="./app.js?v=modern-search-custom-parse-20260618-settings-api-counter"></script>
   </body>
 </html>

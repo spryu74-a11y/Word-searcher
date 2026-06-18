@@ -16,6 +16,7 @@ const CATEGORY_BLUNDER = 3;
 const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const MAX_CANDIDATES_PER_QUERY = 50000;
 const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
+const MAX_COUNTER_REPLY_WORDS = 12;
 const LARGE_DYNAMIC_RECALC_THRESHOLD = 800;
 const HANGUL_BASE = 0xac00;
 const HANGUL_END = 0xd7a3;
@@ -222,9 +223,7 @@ function searchDictionary(options) {
     exactReading,
     searchOptions
   );
-  const skipCounterWords =
-    searchOptions.hasUsedWords ||
-    (!searchOptions.forceDynamic && collected.total >= COUNTER_WORDS_SKIP_THRESHOLD);
+  const skipCounterWords = false;
 
   return {
     queryInfo,
@@ -677,6 +676,9 @@ function getCounterReplyWords(state, predicate, options) {
   const seen = new Set();
   for (const start of state.allowedAfter) {
     forEachBucketIndex(start, (replyIndex) => {
+      if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
+        return;
+      }
       if (replyIndex === state.index || seen.has(replyIndex) || isUsedIndex(replyIndex, options)) {
         return;
       }
@@ -686,7 +688,13 @@ function getCounterReplyWords(state, predicate, options) {
       }
       seen.add(replyIndex);
       replies.push(replyState);
+      if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
+        return;
+      }
     });
+    if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
+      break;
+    }
   }
   replies.sort(compareReading);
   return replies.map((entry) => entry.word);

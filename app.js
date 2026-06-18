@@ -25,6 +25,7 @@
   const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
   const DEFAULT_LIMIT = 260;
   const LARGE_DYNAMIC_RECALC_THRESHOLD = 800;
+  const MAX_COUNTER_REPLY_WORDS = 12;
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
     ["겨", "기다"],
@@ -1132,15 +1133,14 @@
       return [];
     }
 
-    if (options && options.usedKeySet && options.usedKeySet.size) {
-      return [];
-    }
-
     const replies = [];
     const seen = new Set();
     for (const start of entry.allowedAfter) {
       const bucket = dictionary.byStart.get(start) || [];
       for (const reply of bucket) {
+        if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
+          break;
+        }
         if (reply.key === entry.key || seen.has(reply.key) || isUsedEntry(reply, options)) {
           continue;
         }
@@ -1150,6 +1150,9 @@
         }
         seen.add(reply.key);
         replies.push(replyState);
+      }
+      if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
+        break;
       }
     }
 
@@ -1533,11 +1536,11 @@ function initApp(core) {
     resultList: document.getElementById("resultList"),
     resultMeta: document.getElementById("resultMeta"),
     searchButton: document.getElementById("searchButton"),
+    searchChannel: document.getElementById("searchChannel"),
     settingsLanguage: document.getElementById("settingsLanguage"),
     settingsOneShotOnly: document.getElementById("settingsOneShotOnly"),
     settingsSearch: document.getElementById("settingsSearch"),
-    settingsShowUsed: document.getElementById("settingsShowUsed"),
-    settingsSourceMode: document.getElementById("settingsSourceMode"),
+    settingsChannel: document.getElementById("settingsChannel"),
     statEn: document.getElementById("statEn"),
     statKo: document.getElementById("statKo"),
     statAlt: document.getElementById("statAlt"),
@@ -1587,6 +1590,7 @@ function initApp(core) {
     onlineLookupId: 0,
     onlineStatus: "",
     opendictStatus: "",
+    opendictProxyUnavailable: false,
     page: 1,
     requestId: 0,
     searchRequestId: 0,
@@ -1735,13 +1739,13 @@ function initApp(core) {
     button.addEventListener("click", openSettingsPanel);
   });
 
-  if (elements.guildSearch) {
-    elements.guildSearch.addEventListener("click", () => {
+  document.querySelectorAll("[data-search-channel]").forEach((button) => {
+    button.addEventListener("click", () => {
       setDictionaryPanelOpen(false);
       setGuildSelection(false);
       elements.queryInput.focus();
     });
-  }
+  });
 
   elements.toggleDictionary.addEventListener("click", () => {
     setDictionaryPanelOpen(!elements.dictionaryPanel.classList.contains("open"));
@@ -1783,19 +1787,9 @@ function initApp(core) {
   elements.oneShotOnly.addEventListener("change", () => {
     setOneShotOnly(elements.oneShotOnly.checked, true);
   });
-  if (elements.settingsSourceMode) {
-    elements.settingsSourceMode.addEventListener("change", () => {
-      setSourceMode(elements.settingsSourceMode.value, true);
-    });
-  }
   if (elements.settingsOneShotOnly) {
     elements.settingsOneShotOnly.addEventListener("change", () => {
       setOneShotOnly(elements.settingsOneShotOnly.checked, true);
-    });
-  }
-  if (elements.settingsShowUsed) {
-    elements.settingsShowUsed.addEventListener("change", () => {
-      setShowUsedControls(elements.settingsShowUsed.checked);
     });
   }
   if (elements.settingsSearch) {
@@ -1810,6 +1804,7 @@ function initApp(core) {
   }
   if (elements.opendictApiKey) {
     elements.opendictApiKey.addEventListener("input", () => {
+      state.opendictProxyUnavailable = false;
       saveOpendictApiKey(elements.opendictApiKey.value);
       updateOpendictState();
       if (getOpendictApiKey()) {
@@ -1821,6 +1816,7 @@ function initApp(core) {
         return;
       }
       event.preventDefault();
+      state.opendictProxyUnavailable = false;
       saveOpendictApiKey(elements.opendictApiKey.value);
       updateOpendictState();
       scheduleSearch(0, true);
@@ -1828,6 +1824,7 @@ function initApp(core) {
     if (elements.clearOpendictKey) {
       elements.clearOpendictKey.addEventListener("click", () => {
         elements.opendictApiKey.value = "";
+        state.opendictProxyUnavailable = false;
         saveOpendictApiKey("");
         updateOpendictState();
       });
@@ -1876,6 +1873,7 @@ function initApp(core) {
     state.onlineOneShotPreloadMeta = { checkedAt: 0, count: 0 };
     state.onlineOneShotPreloadId += 1;
     state.onlineOneShotPreloadStarted = false;
+    state.opendictProxyUnavailable = false;
     state.usedWordKeys.clear();
     abortOnlineLookup();
     window.clearTimeout(state.onlinePrefixSaveTimer);
@@ -1958,7 +1956,7 @@ function initApp(core) {
       state.searchInFlight = false;
       clearSearchWatchdog();
       state.page = 1;
-      setBusy(true, "온라인 반영중");
+      setBusy(true, "검색중...");
     } else {
       updateOnlineState("한방 반영중");
     }
@@ -1996,12 +1994,12 @@ function initApp(core) {
         return;
       }
       if (message.lookup && message.lookup.candidateCount) {
-        setBusy(false, "온라인 캐시됨");
+        setBusy(false, "검색 완료");
         updateOnlineState("이미 저장됨");
         scheduleSearch(0);
         return;
       }
-      setBusy(false, "온라인 미발견");
+      setBusy(false, "검색 완료");
       updateOnlineState("미발견");
       markOnlineLookupMiss(message.lookup || {});
       return;
@@ -2014,7 +2012,7 @@ function initApp(core) {
         scheduleSearch(0);
         return;
       }
-      setBusy(false, "온라인 캐시됨");
+      setBusy(false, "검색 완료");
       updateOnlineState("이미 저장됨");
       scheduleSearch(0);
       return;
@@ -2164,26 +2162,20 @@ function initApp(core) {
   }
 
   function usesDictionaryDrawer() {
-    return dictionaryDrawerMedia.matches;
+    return false;
   }
 
   function setDictionaryPanelOpen(isOpen) {
-    const nextOpen = Boolean(isOpen) && usesDictionaryDrawer();
+    const nextOpen = Boolean(isOpen);
     elements.dictionaryPanel.classList.toggle("open", nextOpen);
-    document.body.classList.toggle("dictionary-open", nextOpen);
+    document.body.classList.remove("dictionary-open");
+    document.body.classList.toggle("settings-channel", nextOpen);
     elements.toggleDictionary.setAttribute("aria-expanded", String(nextOpen));
-    if (usesDictionaryDrawer()) {
-      setGuildSelection(nextOpen);
-    }
+    setGuildSelection(nextOpen);
   }
 
   function openSettingsPanel() {
-    setGuildSelection(true);
-    if (usesDictionaryDrawer()) {
-      setDictionaryPanelOpen(true);
-    } else {
-      elements.dictionaryPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    setDictionaryPanelOpen(true);
     const focusTarget = elements.settingsSearch || elements.customDictionary;
     if (focusTarget) {
       focusTarget.focus();
@@ -2197,6 +2189,12 @@ function initApp(core) {
     if (elements.guildSettings) {
       elements.guildSettings.classList.toggle("selected", Boolean(isSettingsSelected));
     }
+    if (elements.searchChannel) {
+      elements.searchChannel.classList.toggle("active", !isSettingsSelected);
+    }
+    if (elements.settingsChannel) {
+      elements.settingsChannel.classList.toggle("active", Boolean(isSettingsSelected));
+    }
   }
 
   function setSourceMode(mode, resetPage) {
@@ -2205,9 +2203,6 @@ function initApp(core) {
     document.querySelectorAll("[data-source-mode]").forEach((target) => {
       target.classList.toggle("active", target.dataset.sourceMode === nextMode);
     });
-    if (elements.settingsSourceMode && elements.settingsSourceMode.value !== nextMode) {
-      elements.settingsSourceMode.value = nextMode;
-    }
     scheduleSearch(0, Boolean(resetPage));
   }
 
@@ -2224,21 +2219,12 @@ function initApp(core) {
     state.showUsedControls = true;
     saveBooleanSetting(USED_WORD_CONTROLS_STORAGE_KEY, state.showUsedControls);
     applyUsedControlsVisibility();
-    if (elements.settingsShowUsed) {
-      elements.settingsShowUsed.checked = state.showUsedControls;
-    }
     scheduleSearch(0);
   }
 
   function syncSettingsControls() {
-    if (elements.settingsSourceMode) {
-      elements.settingsSourceMode.value = state.sourceMode;
-    }
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.checked = elements.oneShotOnly.checked;
-    }
-    if (elements.settingsShowUsed) {
-      elements.settingsShowUsed.checked = state.showUsedControls;
     }
     applyUsedControlsVisibility();
     filterSettings();
@@ -2319,7 +2305,7 @@ function initApp(core) {
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     state.onlineAbortController = controller;
     updateOnlineState(`${lookup.targetLabel} 조회중`);
-    elements.buildState.textContent = "온라인 조회중";
+    elements.buildState.textContent = "검색중...";
 
     fetchOnlineWords(lookup, controller && controller.signal)
       .then((words) => expandOnlineWordsForLookup(words, lookup, controller && controller.signal))
@@ -2331,7 +2317,7 @@ function initApp(core) {
           if (lookup.wasEmpty) {
             markOnlineLookupMiss(lookup);
             updateOnlineState("미발견");
-            elements.buildState.textContent = "온라인 미발견";
+            elements.buildState.textContent = "검색 완료";
           } else {
             updateOnlineState("추가 없음");
             elements.buildState.textContent = "로컬 결과";
@@ -2348,7 +2334,7 @@ function initApp(core) {
         }
         if (lookupId === state.onlineLookupId) {
           updateOnlineState("조회 실패");
-          elements.buildState.textContent = "온라인 실패";
+          elements.buildState.textContent = "검색 실패";
         }
       })
       .finally(() => {
@@ -2565,7 +2551,7 @@ function initApp(core) {
   }
 
   function getOpendictProxyUrl() {
-    if (!canUseOpendictProxy()) {
+    if (!canUseOpendictProxy() || state.opendictProxyUnavailable) {
       return "";
     }
     return new URL(OPENDICT_PROXY_ENDPOINT, window.location.href).toString();
@@ -2574,7 +2560,7 @@ function initApp(core) {
   function isOpendictLookupEnabled() {
     // The proxy supplies the API key server-side (OPENDICT_API_KEY), so lookups
     // should run whenever a proxy is reachable even if no key is typed in the field.
-    return Boolean(getOpendictApiKey()) || canUseOpendictProxy();
+    return Boolean(getOpendictApiKey()) || Boolean(getOpendictProxyUrl());
   }
 
   function loadOpendictApiKey() {
@@ -3358,42 +3344,54 @@ function initApp(core) {
   }
 
   async function fetchOpendictWordsPage(params, apiKey, normalizedQuery, method, signal) {
-    const proxyUrl = getOpendictProxyUrl();
-    if (proxyUrl) {
-      const proxyParams = new URLSearchParams(params);
-      if (apiKey) {
-        proxyParams.set("key", apiKey);
-      }
+    if (apiKey) {
+      params.set("key", apiKey);
       try {
-        return await fetchOpendictEndpoint(`${proxyUrl}?${proxyParams.toString()}`, normalizedQuery, method, signal);
+        return await fetchOpendictEndpoint(`${OPENDICT_SEARCH_ENDPOINT}?${params.toString()}`, normalizedQuery, method, signal);
       } catch (error) {
         if (error && error.name === "AbortError") {
           throw error;
         }
-        if (!apiKey) {
-          updateOpendictState("프록시 필요");
-          return [];
+        const proxyUrl = getOpendictProxyUrl();
+        if (!proxyUrl) {
+          if (error instanceof TypeError) {
+            updateOpendictState("프록시 필요");
+          }
+          throw error;
+        }
+        const proxyParams = new URLSearchParams(params);
+        try {
+          return await fetchOpendictEndpoint(`${proxyUrl}?${proxyParams.toString()}`, normalizedQuery, method, signal);
+        } catch (proxyError) {
+          if (proxyError && proxyError.name === "AbortError") {
+            throw proxyError;
+          }
+          state.opendictProxyUnavailable = true;
+          throw error;
         }
       }
     }
 
+    const proxyUrl = getOpendictProxyUrl();
+    if (proxyUrl) {
+      try {
+        return await fetchOpendictEndpoint(`${proxyUrl}?${params.toString()}`, normalizedQuery, method, signal);
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          throw error;
+        }
+        state.opendictProxyUnavailable = true;
+        updateOpendictState("키 필요");
+        return [];
+      }
+    }
+
     if (!apiKey) {
-      updateOpendictState(canUseOpendictProxy() ? "프록시 필요" : "키 없음");
+      updateOpendictState("키 없음");
       return [];
     }
 
-    params.set("key", apiKey);
-    try {
-      return await fetchOpendictEndpoint(`${OPENDICT_SEARCH_ENDPOINT}?${params.toString()}`, normalizedQuery, method, signal);
-    } catch (error) {
-      if (error && error.name === "AbortError") {
-        throw error;
-      }
-      if (error instanceof TypeError) {
-        throw new Error("opendict browser request blocked; use local proxy");
-      }
-      throw error;
-    }
+    return [];
   }
 
   async function fetchOpendictEndpoint(url, query, method, signal) {
@@ -3982,7 +3980,7 @@ function initApp(core) {
 
     const key = elements.opendictApiKey ? normalizeOpendictApiKey(elements.opendictApiKey.value) : getOpendictApiKey();
     if (!key) {
-      if (canUseOpendictProxy()) {
+      if (getOpendictProxyUrl()) {
         // Proxy mode: no field key needed. Reflect the live lookup status when
         // one is set, falling back to the idle "프록시 대기" label.
         elements.opendictState.textContent = state.opendictStatus || "프록시 대기";
@@ -4002,7 +4000,7 @@ function initApp(core) {
   }
 
   function isOnlineLookupEnabled() {
-    return Boolean(getOpendictApiKey()) || canUseOpendictProxy();
+    return Boolean(getOpendictApiKey()) || Boolean(getOpendictProxyUrl());
   }
 
   function renderSearch(payload) {
@@ -4361,7 +4359,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-search-watchdog", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-settings-api-counter", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
