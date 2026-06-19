@@ -20,6 +20,10 @@ const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const MAX_CANDIDATES_PER_QUERY = 50000;
 const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
 const MAX_COUNTER_REPLY_WORDS = 12;
+const SHARD_CACHE_MAX = 160;
+const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_RESULT_CACHE_MAX = 128;
+const SEARCH_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const HANGUL_BASE = 0xac00;
 const HANGUL_END = 0xd7a3;
 const VOWEL_COUNT = 21;
@@ -45,14 +49,27 @@ let customByStart = new Map();
 let customByKey = new Map();
 let cachedCustomIndices = null;
 let runtimeStats = null;
+let loadedShardMeta = new Map();
+let searchResultCache = new Map();
+let runtimeVersion = 0;
+let activeSearchController = null;
+let latestSearchId = 0;
 
 self.onmessage = (event) => {
-  handleMessage(event.data);
+  const message = event.data || {};
+  if (message.type === "cancelSearch") {
+    if (message.id === latestSearchId && activeSearchController) {
+      activeSearchController.abort();
+    }
+    return;
+  }
+  handleMessage(message);
 };
 
 async function handleMessage(message) {
   try {
     if (message.type === "buildDefault") {
+      abortActiveSearch();
       await buildRuntime(message.extraText || "");
       self.postMessage({
         type: "built",
@@ -64,6 +81,7 @@ async function handleMessage(message) {
     }
 
     if (message.type === "build" || message.type === "append") {
+      abortActiveSearch();
       await buildRuntime(message.text || "");
       self.postMessage({
         type: "built",
@@ -75,8 +93,12 @@ async function handleMessage(message) {
     }
 
     if (message.type === "appendOnlineCandidates") {
+      abortActiveSearch();
       await ensureIndex();
       const selectedWords = appendOnlineCandidateWords(message.words || [], message.lookup || {});
+      if (selectedWords.length) {
+        clearSearchResultCache();
+      }
       self.postMessage({
         type: "onlineAppendResult",
         id: message.id,
@@ -88,9 +110,37 @@ async function handleMessage(message) {
     }
 
     if (message.type === "search") {
-      await ensureIndex();
-      const payload = await searchDictionary(message.options || {});
-      self.postMessage({ type: "searchResult", id: message.id, payload });
+      latestSearchId = message.id;
+      abortActiveSearch();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      activeSearchController = controller;
+      const signal = controller && controller.signal;
+      const receivedAt = now();
+      try {
+        await ensureIndex();
+        throwIfAborted(signal);
+        const payload = await searchDictionary(message.options || {}, {
+          id: message.id,
+          traceId: message.traceId || "",
+          receivedAt,
+          signal
+        });
+        if (message.id !== latestSearchId || isAborted(signal)) {
+          self.postMessage({ type: "searchCanceled", id: message.id, traceId: message.traceId || "" });
+          return;
+        }
+        self.postMessage({ type: "searchResult", id: message.id, traceId: message.traceId || "", payload });
+      } catch (error) {
+        if (isAbortError(error) || isAborted(signal)) {
+          self.postMessage({ type: "searchCanceled", id: message.id, traceId: message.traceId || "" });
+          return;
+        }
+        throw error;
+      } finally {
+        if (activeSearchController === controller) {
+          activeSearchController = null;
+        }
+      }
     }
   } catch (error) {
     self.postMessage({
@@ -99,6 +149,34 @@ async function handleMessage(message) {
       message: error && error.message ? error.message : String(error)
     });
   }
+}
+
+function abortActiveSearch() {
+  if (activeSearchController) {
+    activeSearchController.abort();
+    activeSearchController = null;
+  }
+}
+
+function isAborted(signal) {
+  return Boolean(signal && signal.aborted);
+}
+
+function throwIfAborted(signal) {
+  if (!isAborted(signal)) {
+    return;
+  }
+  throw createAbortError();
+}
+
+function createAbortError() {
+  const error = new Error("search aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error) {
+  return Boolean(error && error.name === "AbortError");
 }
 
 async function ensureIndex() {
@@ -124,10 +202,10 @@ async function ensureIndex() {
         baseEntries.length = total;
         baseBuckets = Object.create(null);
         baseByKey = new Map();
+        loadedShardMeta = new Map();
         baseStats = payload.stats || createEmptyStats();
         defaultMeta = payload.meta || null;
         runtimeStats = { ...baseStats, buildMs: 0 };
-        prefetchAllShards();
         return payload;
       })
       .catch(() => loadFullIndex());
@@ -147,6 +225,7 @@ function loadFullIndex() {
       useFullIndex = true;
       shardFiles = Object.create(null);
       shardPromises = new Map();
+      loadedShardMeta = new Map();
       baseEntries = payload.entries || [];
       baseBuckets = payload.buckets || Object.create(null);
       baseStats = payload.stats || createEmptyStats();
@@ -157,17 +236,22 @@ function loadFullIndex() {
     });
 }
 
-async function loadShards(starts) {
+async function loadShards(starts, signal) {
   await ensureIndex();
+  throwIfAborted(signal);
   if (useFullIndex) {
     return;
   }
   const uniqueStarts = Array.from(new Set((starts || []).filter(Boolean)));
-  await Promise.all(uniqueStarts.map((start) => loadShard(start).catch(() => {})));
+  await Promise.all(uniqueStarts.map((start) => loadShard(start, signal).catch(() => {})));
+  throwIfAborted(signal);
+  trimShardCache(uniqueStarts);
 }
 
-async function loadShard(start) {
+async function loadShard(start, signal) {
+  throwIfAborted(signal);
   if (useFullIndex || baseBuckets[start]) {
+    touchShard(start);
     return;
   }
 
@@ -198,6 +282,7 @@ async function loadShard(start) {
           indices.push(index);
         }
         baseBuckets[start] = indices;
+        rememberLoadedShard(start, indices);
         return indices;
       })
       .catch((err) => {
@@ -207,27 +292,76 @@ async function loadShard(start) {
     shardPromises.set(start, request);
   }
   await shardPromises.get(start);
+  throwIfAborted(signal);
 }
 
-function prefetchAllShards() {
-  const starts = Object.keys(shardFiles);
-  if (!starts.length) return;
-  let idx = 0;
-  function next() {
-    if (idx >= starts.length) return;
-    loadShard(starts[idx++]).then(next, next);
+function rememberLoadedShard(start, indices) {
+  if (!start || !Array.isArray(indices)) {
+    return;
   }
-  // HTTP/1.1은 도메인당 연결 6개 제한 — 검색 fetch가 밀리지 않도록
-  // 2개 체인으로 제한하고 1초 뒤 시작 (첫 검색 우선)
-  const concurrency = Math.min(2, starts.length);
-  setTimeout(() => {
-    for (let i = 0; i < concurrency; i++) next();
-  }, 1000);
+  loadedShardMeta.set(start, {
+    loadedAt: Date.now(),
+    usedAt: Date.now(),
+    indices
+  });
+}
+
+function touchShard(start) {
+  const meta = loadedShardMeta.get(start);
+  if (meta) {
+    meta.usedAt = Date.now();
+  }
+}
+
+function trimShardCache(protectedStarts) {
+  if (useFullIndex || !loadedShardMeta.size) {
+    return;
+  }
+  const protectedSet = new Set(protectedStarts || []);
+  const nowMs = Date.now();
+  for (const [start, meta] of loadedShardMeta.entries()) {
+    if (protectedSet.has(start)) {
+      continue;
+    }
+    if (!meta || nowMs - meta.usedAt > SHARD_CACHE_TTL_MS) {
+      evictShard(start);
+    }
+  }
+  if (loadedShardMeta.size <= SHARD_CACHE_MAX) {
+    return;
+  }
+  const evictable = Array.from(loadedShardMeta.entries())
+    .filter(([start]) => !protectedSet.has(start))
+    .sort((left, right) => left[1].usedAt - right[1].usedAt);
+  for (const [start] of evictable) {
+    if (loadedShardMeta.size <= SHARD_CACHE_MAX) {
+      break;
+    }
+    evictShard(start);
+  }
+}
+
+function evictShard(start) {
+  const indices = baseBuckets[start];
+  if (Array.isArray(indices)) {
+    for (const index of indices) {
+      const entry = baseEntries[index];
+      if (entry) {
+        baseByKey.delete(normalizeKey(entry[ENTRY_WORD]));
+        baseEntries[index] = undefined;
+      }
+    }
+  }
+  delete baseBuckets[start];
+  loadedShardMeta.delete(start);
+  shardPromises.delete(start);
 }
 
 async function buildRuntime(extraText) {
   const started = now();
   await ensureIndex();
+  clearSearchResultCache();
+  runtimeVersion += 1;
   customEntries = [];
   customByStart = new Map();
   customByKey = new Map();
@@ -301,6 +435,8 @@ function appendOnlineCandidateWords(words, lookup) {
 
   if (selected.length) {
     recalculateCustomEntries();
+    runtimeVersion += 1;
+    clearSearchResultCache();
   }
   return selected;
 }
@@ -380,27 +516,48 @@ function createEmptyStats() {
   };
 }
 
-async function searchDictionary(options) {
+async function searchDictionary(options, context) {
+  const signal = context && context.signal;
+  const traceId = (context && context.traceId) || "";
   const started = now();
+  throwIfAborted(signal);
   const pageSize = Number(options.pageSize || options.limit || DEFAULT_LIMIT);
   const page = Number(options.page || 1);
   const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
+  const parseStarted = now();
   const queryInfo = getQueryInfo(options.query, sourceMode);
   const exactWord = normalizeKey(options.query || "");
   const exactReading = queryInfo.reading;
+  const parseMs = elapsed(parseStarted);
+  const cacheKey = getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page);
+  const cachedPayload = getSearchResultCache(cacheKey);
+  if (cachedPayload) {
+    const totalMs = elapsed(started);
+    cachedPayload.elapsedMs = totalMs;
+    cachedPayload.timing = {
+      ...(cachedPayload.timing || {}),
+      parseMs,
+      cacheHit: true,
+      totalMs
+    };
+    logWorkerTrace(traceId, "cache-hit", cachedPayload.timing, cachedPayload.total);
+    return cachedPayload;
+  }
 
   if (!queryInfo.reading) {
     return {
       queryInfo,
       ...createEmptyResults(pageSize, page),
       elapsedMs: 0,
-      timing: { shardMs: 0, searchMs: 0, stateMs: 0 }
+      timing: { parseMs, shardMs: 0, searchMs: 0, stateMs: 0 }
     };
   }
 
   const t0 = now();
-  await loadShards(getSearchShardStarts(queryInfo, sourceMode));
+  const searchShardStarts = getSearchShardStarts(queryInfo, sourceMode);
+  await loadShards(searchShardStarts, signal);
   const shardMs = elapsed(t0);
+  throwIfAborted(signal);
 
   const t1 = now();
   const searchOptions = createSearchOptions(options);
@@ -420,14 +577,17 @@ async function searchDictionary(options) {
     searchOptions
   );
   const searchMs = elapsed(t1);
+  throwIfAborted(signal);
 
   const isDynamic = searchOptions.hasUsedWords || searchOptions.forceDynamic;
 
   const t2 = now();
   if (isDynamic) {
-    await loadShards(getAllowedAfterStartsForIndices(collected.visibleIndices));
+    const dynamicShardStarts = getAllowedAfterStartsForIndices(collected.visibleIndices);
+    await loadShards(Array.from(new Set(searchShardStarts.concat(dynamicShardStarts))), signal);
   }
   const followerMs = elapsed(t2);
+  throwIfAborted(signal);
 
   const t3 = now();
   const visibleStates = collected.visibleIndices.map((index) => getEntryState(index, searchOptions));
@@ -437,7 +597,7 @@ async function searchDictionary(options) {
   const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, false));
 
   const totalMs = elapsed(started);
-  return {
+  const payload = {
     queryInfo,
     total: collected.total,
     categoryCounts: collected.categoryCounts,
@@ -447,8 +607,100 @@ async function searchDictionary(options) {
     pageCount: collected.pageCount,
     results,
     elapsedMs: totalMs,
-    timing: { shardMs, searchMs, followerMs, stateMs, totalMs }
+    timing: {
+      parseMs,
+      shardMs,
+      searchMs,
+      followerMs,
+      stateMs,
+      totalMs,
+      cacheHit: false,
+      loadedShards: loadedShardMeta.size
+    }
   };
+  putSearchResultCache(cacheKey, payload);
+  logWorkerTrace(traceId, "search", payload.timing, payload.total);
+  return payload;
+}
+
+function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page) {
+  const usedKeys = Array.isArray(options.usedKeys)
+    ? options.usedKeys.map(normalizeKey).filter(Boolean).sort().join(",")
+    : "";
+  return [
+    runtimeVersion,
+    normalizeKey(options.query || ""),
+    queryInfo && queryInfo.reading ? queryInfo.reading : "",
+    sourceMode,
+    options.oneShotOnly ? "1" : "0",
+    String(Math.max(1, Math.floor(Number(page)) || 1)),
+    String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT)),
+    usedKeys
+  ].join("|");
+}
+
+function getSearchResultCache(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+  const entry = searchResultCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    searchResultCache.delete(cacheKey);
+    return null;
+  }
+  searchResultCache.delete(cacheKey);
+  searchResultCache.set(cacheKey, {
+    payload: entry.payload,
+    expiresAt: entry.expiresAt,
+    usedAt: Date.now()
+  });
+  return entry.payload;
+}
+
+function putSearchResultCache(cacheKey, payload) {
+  if (!cacheKey || !payload) {
+    return;
+  }
+  searchResultCache.set(cacheKey, {
+    payload,
+    expiresAt: Date.now() + SEARCH_RESULT_CACHE_TTL_MS,
+    usedAt: Date.now()
+  });
+  trimSearchResultCache();
+}
+
+function trimSearchResultCache() {
+  const nowMs = Date.now();
+  for (const [key, entry] of searchResultCache.entries()) {
+    if (!entry || entry.expiresAt <= nowMs) {
+      searchResultCache.delete(key);
+    }
+  }
+  while (searchResultCache.size > SEARCH_RESULT_CACHE_MAX) {
+    const oldest = searchResultCache.keys().next().value;
+    searchResultCache.delete(oldest);
+  }
+}
+
+function clearSearchResultCache() {
+  searchResultCache.clear();
+}
+
+function logWorkerTrace(traceId, phase, timing, total) {
+  if (typeof console === "undefined" || typeof console.debug !== "function") {
+    return;
+  }
+  console.debug("[search-worker-trace]", {
+    traceId,
+    phase,
+    total,
+    timing,
+    loadedShards: loadedShardMeta.size,
+    resultCacheSize: searchResultCache.size
+  });
 }
 
 function createSearchOptions(options) {
@@ -1315,6 +1567,7 @@ function normalizeKey(value) {
 }
 
 function getBucket(start) {
+  touchShard(start);
   const base = baseBuckets[start] || EMPTY;
   const custom = customByStart.get(start) || EMPTY;
   if (!custom.length) {
@@ -1331,6 +1584,7 @@ function getBucket(start) {
 }
 
 function forEachBucketIndex(start, callback) {
+  touchShard(start);
   const base = baseBuckets[start] || EMPTY;
   for (const index of base) {
     callback(index);
@@ -1345,6 +1599,7 @@ function forEachBucketIndex(start, callback) {
 }
 
 function someInBucket(start, predicate) {
+  touchShard(start);
   const base = baseBuckets[start] || EMPTY;
   for (const index of base) {
     if (predicate(index)) return true;

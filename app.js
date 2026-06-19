@@ -1604,6 +1604,13 @@ function initApp(core) {
   const MOBILE_RESULT_PAGE_SIZE = 25;
   const ONE_SHOT_RESULT_PAGE_SIZE = 120;
   const SEARCH_SLOW_NOTICE_MS = 8000;
+  const SEARCH_TIMEOUT_MS = 20000;
+  const SEARCH_WORKER_RESTART_AFTER_MS = 1200;
+  const SEARCH_DEBOUNCE_MS = 300;
+  const SEARCH_MIN_QUERY_LENGTH = 1;
+  const SEARCH_RESULT_CACHE_MAX = 128;
+  const SEARCH_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
+  const SEARCH_METRICS_LOG_INTERVAL_MS = 15000;
   const REQUIRED_SUPPLEMENT_WORDS = [];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
@@ -1690,9 +1697,26 @@ function initApp(core) {
     searchSignature: "",
     searchTimer: 0,
     searchWatchdogTimer: 0,
+    searchTimeoutTimer: 0,
     searchInFlight: false,
+    searchAbortController: null,
+    searchResultCache: new Map(),
+    lastRenderedSearchSignature: "",
+    lastSubmittedSearchSignature: "",
     pendingSearch: false,
     observedQuery: "",
+    searchMetrics: {
+      inputEvents: 0,
+      started: 0,
+      completed: 0,
+      canceled: 0,
+      failed: 0,
+      cacheHits: 0,
+      skipped: 0,
+      ignored: 0,
+      workerRestarts: 0,
+      criticalListeners: 0
+    },
     showUsedControls: true,
     sourceMode: "starts",
     usedWordKeys: loadUsedWordKeys(),
@@ -1743,10 +1767,12 @@ function initApp(core) {
 
     if (message.type === "searchResult") {
       if (message.id !== state.searchRequestId) {
+        state.searchMetrics.ignored += 1;
         return;
       }
       clearSearchWatchdog();
       state.searchInFlight = false;
+      state.searchAbortController = null;
       const currentQuery = String(elements.queryInput.value || "").trim();
       if (!currentQuery) {
         state.pendingSearch = false;
@@ -1759,8 +1785,11 @@ function initApp(core) {
         return;
       }
       state.pendingSearch = false;
+      putSearchResultCache(state.searchSignature, message.payload);
       const renderStart = performance.now();
       renderSearch(message.payload);
+      state.lastRenderedSearchSignature = state.searchSignature;
+      state.searchMetrics.completed += 1;
       const renderMs = Math.round(performance.now() - renderStart);
       const totalMs = Math.round(performance.now() - (state._searchStartTime || 0));
       const t = message.payload && message.payload.timing;
@@ -1769,6 +1798,19 @@ function initApp(core) {
         (t ? ` (shard=${t.shardMs}ms search=${t.searchMs}ms follower=${t.followerMs || 0}ms state=${t.stateMs}ms)` : "") +
         ` | render=${renderMs}ms | 결과=${message.payload && message.payload.total}건`
       );
+      return;
+    }
+
+    if (message.type === "searchCanceled") {
+      if (message.id === state.searchRequestId) {
+        clearSearchWatchdog();
+        state.searchInFlight = false;
+        state.searchAbortController = null;
+        state.searchMetrics.canceled += 1;
+        if (state.pendingSearch) {
+          scheduleSearch(0, true);
+        }
+      }
       return;
     }
 
@@ -1782,11 +1824,17 @@ function initApp(core) {
     }
 
     if (message.type === "error") {
+      if (state.workerReady && message.id && message.id !== state.searchRequestId) {
+        state.searchMetrics.ignored += 1;
+        return;
+      }
       if (recoverSearchWorker(message.message)) {
         return;
       }
       clearSearchWatchdog();
       state.searchInFlight = false;
+      state.searchAbortController = null;
+      state.searchMetrics.failed += 1;
       setBusy(false, "오류");
       renderEmpty(message.message || "처리 중 오류가 났습니다");
     }
@@ -1798,6 +1846,8 @@ function initApp(core) {
     }
     state.workerReady = false;
     state.searchInFlight = false;
+    state.searchAbortController = null;
+    state.searchMetrics.failed += 1;
     clearSearchWatchdog();
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
@@ -1811,6 +1861,8 @@ function initApp(core) {
     }
     state.workerReady = false;
     state.searchInFlight = false;
+    state.searchAbortController = null;
+    state.searchMetrics.failed += 1;
     clearSearchWatchdog();
     state.pendingSearch = false;
     setBusy(false, "검색 오류");
@@ -1833,6 +1885,7 @@ function initApp(core) {
     attachWorkerHandlers(state.worker);
     state.workerReady = false;
     state.searchInFlight = false;
+    state.searchAbortController = null;
     clearSearchWatchdog();
     state.pendingSearch = true;
     state.page = 1;
@@ -1840,6 +1893,14 @@ function initApp(core) {
     renderEmpty("검색 엔진을 다시 시작하고 있습니다");
     rebuildDictionary();
     return true;
+  }
+
+  function addSearchEventListener(target, type, handler, options) {
+    if (!target || typeof target.addEventListener !== "function") {
+      return;
+    }
+    state.searchMetrics.criticalListeners += 1;
+    target.addEventListener(type, handler, options);
   }
 
   document.querySelectorAll("[data-source-mode]").forEach((button) => {
@@ -1865,27 +1926,28 @@ function initApp(core) {
   });
   elements.closeDictionary.addEventListener("click", () => setDictionaryPanelOpen(false));
   elements.panelBackdrop.addEventListener("click", () => setDictionaryPanelOpen(false));
-  elements.searchButton.addEventListener("click", () => {
+  addSearchEventListener(elements.searchButton, "click", () => {
     state.observedQuery = elements.queryInput.value;
     scheduleSearch(0, true);
   });
-  elements.queryInput.addEventListener("compositionstart", () => {
+  addSearchEventListener(elements.queryInput, "compositionstart", () => {
     state.observedQuery = elements.queryInput.value;
-    scheduleSearch(80, true);
+    scheduleSearch(SEARCH_DEBOUNCE_MS, true);
   });
-  elements.queryInput.addEventListener("compositionend", () => {
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(0, true);
-  });
-  elements.queryInput.addEventListener("blur", () => {
+  addSearchEventListener(elements.queryInput, "compositionend", () => {
     state.observedQuery = elements.queryInput.value;
     scheduleSearch(0, true);
   });
-  elements.queryInput.addEventListener("input", () => {
+  addSearchEventListener(elements.queryInput, "blur", () => {
     state.observedQuery = elements.queryInput.value;
-    scheduleSearch(80, true);
+    scheduleSearch(0, true);
   });
-  elements.queryInput.addEventListener("keydown", (event) => {
+  addSearchEventListener(elements.queryInput, "input", () => {
+    state.searchMetrics.inputEvents += 1;
+    state.observedQuery = elements.queryInput.value;
+    scheduleSearch(SEARCH_DEBOUNCE_MS, true);
+  });
+  addSearchEventListener(elements.queryInput, "keydown", (event) => {
     if (event.key !== "Enter") {
       return;
     }
@@ -1897,11 +1959,11 @@ function initApp(core) {
       elements.queryInput.blur();
     }
   });
-  elements.oneShotOnly.addEventListener("change", () => {
+  addSearchEventListener(elements.oneShotOnly, "change", () => {
     setOneShotOnly(elements.oneShotOnly.checked, true);
   });
   if (elements.settingsOneShotOnly) {
-    elements.settingsOneShotOnly.addEventListener("change", () => {
+    addSearchEventListener(elements.settingsOneShotOnly, "change", () => {
       setOneShotOnly(elements.settingsOneShotOnly.checked, true);
     });
   }
@@ -1909,13 +1971,13 @@ function initApp(core) {
     elements.settingsSearch.addEventListener("input", filterSettings);
   }
   if (elements.resetUsedWords) {
-    elements.resetUsedWords.addEventListener("click", () => {
+    addSearchEventListener(elements.resetUsedWords, "click", () => {
       state.usedWordKeys.clear();
       saveUsedWordKeys();
       scheduleSearch(0, true);
     });
   }
-  elements.resultPager.addEventListener("click", (event) => {
+  addSearchEventListener(elements.resultPager, "click", (event) => {
     const button = event.target.closest("[data-page]");
     if (!button) {
       return;
@@ -1923,14 +1985,14 @@ function initApp(core) {
     setResultPage(Number(button.dataset.page));
   });
   let _scrollThrottleTimer = null;
-  elements.resultList.addEventListener("scroll", () => {
+  addSearchEventListener(elements.resultList, "scroll", () => {
     if (_scrollThrottleTimer) return;
     _scrollThrottleTimer = setTimeout(() => {
       _scrollThrottleTimer = null;
       updateBackToTop();
     }, 100);
   });
-  elements.backToTop.addEventListener("click", () => {
+  addSearchEventListener(elements.backToTop, "click", () => {
     animateResultListToTop();
   });
   document.addEventListener("keydown", (event) => {
@@ -2004,6 +2066,7 @@ function initApp(core) {
 
   renderEmpty("단어팩을 준비하고 있습니다");
   rebuildDictionary();
+  startSearchMetricsLogger();
   window.setInterval(() => {
     const currentQuery = elements.queryInput.value;
     const currentReading = core.toReading(currentQuery);
@@ -2015,15 +2078,15 @@ function initApp(core) {
       return;
     }
     state.observedQuery = currentQuery;
-    scheduleSearch(80, true);
+    scheduleSearch(SEARCH_DEBOUNCE_MS, true);
   }, 150);
 
   function rebuildDictionary() {
     abortOnlineLookup();
+    cancelActiveSearch("rebuild");
+    clearSearchResultCache();
     clearSearchWatchdog();
-    const extraText = [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText]
-      .filter(Boolean)
-      .join("\n");
+    const extraText = getDictionaryExtraText();
     state.workerReady = false;
     state.searchInFlight = false;
     state.page = 1;
@@ -2036,6 +2099,12 @@ function initApp(core) {
       id: ++state.requestId,
       extraText
     });
+  }
+
+  function getDictionaryExtraText() {
+    return [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText]
+      .filter(Boolean)
+      .join("\n");
   }
 
   function appendOnlineCandidates(words, lookup) {
@@ -2051,6 +2120,7 @@ function initApp(core) {
       return;
     }
     const requestId = ++state.requestId;
+    clearSearchResultCache();
     if (!isPreload) {
       state.workerReady = false;
       state.searchInFlight = false;
@@ -2151,22 +2221,29 @@ function initApp(core) {
     }
     state.pendingSearch = true;
     const query = String(elements.queryInput.value || "").trim();
-    if (query) {
+    const nextSignature = query ? getSearchSignature(query) : "";
+    if (state.searchInFlight && nextSignature && nextSignature !== state.searchSignature) {
+      cancelActiveSearch("superseded");
+    }
+    if (query && query.length >= SEARCH_MIN_QUERY_LENGTH) {
       renderPendingSearch(query);
     } else if (state.workerReady) {
+      cancelActiveSearch("empty-query");
       renderStartScreen();
     }
     window.clearTimeout(state.searchTimer);
-    state.searchTimer = window.setTimeout(runSearch, delay);
+    state.searchTimer = window.setTimeout(runSearch, Math.max(0, Number(delay) || 0));
   }
 
   function runSearch() {
     const query = String(elements.queryInput.value || "").trim();
-    if (!query) {
+    if (!query || query.length < SEARCH_MIN_QUERY_LENGTH) {
       state.pendingSearch = false;
       state.searchInFlight = false;
       state.searchRequestId = 0;
       state.searchSignature = "";
+      state.lastSubmittedSearchSignature = "";
+      state.searchAbortController = null;
       clearSearchWatchdog();
       renderStartScreen();
       return;
@@ -2175,21 +2252,54 @@ function initApp(core) {
       state.pendingSearch = true;
       return;
     }
-    if (state.searchInFlight) {
+    const signature = getSearchSignature(query);
+    const cachedPayload = getSearchResultCache(signature);
+    if (cachedPayload) {
+      state.pendingSearch = false;
+      state.searchMetrics.cacheHits += 1;
+      renderSearch(cachedPayload);
+      state.lastRenderedSearchSignature = signature;
+      logSearchTrace("cache-hit", {
+        signature,
+        results: cachedPayload.total || 0
+      });
+      return;
+    }
+    if (signature === state.lastRenderedSearchSignature && !state.searchInFlight) {
+      state.pendingSearch = false;
+      state.searchMetrics.skipped += 1;
+      return;
+    }
+    if (state.searchInFlight && signature === state.searchSignature) {
       state.pendingSearch = true;
       return;
+    }
+    if (state.searchInFlight) {
+      cancelActiveSearch("superseded");
     }
 
     state.pendingSearch = false;
     const requestId = ++state.requestId;
+    const traceId = createTraceId(requestId);
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
     state.searchRequestId = requestId;
-    state.searchSignature = getSearchSignature(query);
+    state.searchSignature = signature;
+    state.lastSubmittedSearchSignature = signature;
     state.searchInFlight = true;
+    state.searchAbortController = controller;
     state._searchStartTime = performance.now();
+    state.searchMetrics.started += 1;
+    logSearchTrace("request-start", {
+      traceId,
+      requestId,
+      signature,
+      queryLength: query.length
+    });
     startSearchWatchdog(requestId);
     state.worker.postMessage({
       type: "search",
       id: requestId,
+      traceId,
       options: {
         query,
         sourceMode: state.sourceMode,
@@ -2201,6 +2311,180 @@ function initApp(core) {
     });
   }
 
+  function cancelActiveSearch(reason) {
+    if (!state.searchInFlight && !state.searchAbortController) {
+      return false;
+    }
+    const canceledRequestId = state.searchRequestId;
+    const activeMs = state._searchStartTime ? performance.now() - state._searchStartTime : 0;
+    if (state.searchAbortController) {
+      state.searchAbortController.abort();
+      state.searchAbortController = null;
+    }
+    state.searchInFlight = false;
+    state.searchRequestId = 0;
+    state.searchSignature = "";
+    state.lastSubmittedSearchSignature = "";
+    clearSearchWatchdog();
+    state.searchMetrics.canceled += 1;
+
+    if (shouldRestartSearchWorker(reason, activeMs)) {
+      restartSearchWorker(reason, activeMs);
+      return true;
+    }
+
+    if (state.worker && canceledRequestId) {
+      state.worker.postMessage({
+        type: "cancelSearch",
+        id: canceledRequestId,
+        reason: reason || "canceled"
+      });
+    }
+    return false;
+  }
+
+  function shouldRestartSearchWorker(reason, activeMs) {
+    if (!state.worker || state.worker.__isInlineFallback || typeof state.worker.terminate !== "function") {
+      return false;
+    }
+    if (reason === "timeout") {
+      return true;
+    }
+    return reason === "superseded" && activeMs >= SEARCH_WORKER_RESTART_AFTER_MS;
+  }
+
+  function restartSearchWorker(reason, activeMs) {
+    const previousWorker = state.worker;
+    if (previousWorker && typeof previousWorker.terminate === "function") {
+      previousWorker.terminate();
+    }
+
+    state.worker = createSearchWorker(core, {
+      textUrl: defaultDictionaryTextUrl,
+      metaUrl: defaultDictionaryMetaUrl,
+      scriptUrl: defaultDictionaryScriptUrl,
+      fallbackText: fallbackDefaultText
+    });
+    attachWorkerHandlers(state.worker);
+    state.workerReady = false;
+    state.searchInFlight = false;
+    state.searchAbortController = null;
+    state.searchRequestId = 0;
+    state.searchSignature = "";
+    state.pendingSearch = true;
+    clearSearchResultCache();
+    state.searchMetrics.workerRestarts += 1;
+    setBusy(true, "검색 엔진 재시작 중");
+    logSearchTrace("worker-restart", {
+      reason: reason || "canceled",
+      activeMs: Math.round(activeMs || 0)
+    });
+    state.worker.postMessage({
+      type: "buildDefault",
+      id: ++state.requestId,
+      extraText: getDictionaryExtraText()
+    });
+  }
+
+  function createTraceId(requestId) {
+    return `s-${Date.now().toString(36)}-${requestId}`;
+  }
+
+  function getSearchResultCache(signature) {
+    if (!signature) {
+      return null;
+    }
+    const entry = state.searchResultCache.get(signature);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAt <= Date.now()) {
+      state.searchResultCache.delete(signature);
+      return null;
+    }
+    state.searchResultCache.delete(signature);
+    state.searchResultCache.set(signature, {
+      payload: entry.payload,
+      expiresAt: entry.expiresAt,
+      usedAt: Date.now()
+    });
+    return entry.payload;
+  }
+
+  function putSearchResultCache(signature, payload) {
+    if (!signature || !payload) {
+      return;
+    }
+    state.searchResultCache.set(signature, {
+      payload,
+      expiresAt: Date.now() + SEARCH_RESULT_CACHE_TTL_MS,
+      usedAt: Date.now()
+    });
+    trimSearchResultCache();
+  }
+
+  function trimSearchResultCache() {
+    const nowMs = Date.now();
+    for (const [key, entry] of state.searchResultCache.entries()) {
+      if (!entry || entry.expiresAt <= nowMs) {
+        state.searchResultCache.delete(key);
+      }
+    }
+    while (state.searchResultCache.size > SEARCH_RESULT_CACHE_MAX) {
+      const oldest = state.searchResultCache.keys().next().value;
+      state.searchResultCache.delete(oldest);
+    }
+  }
+
+  function clearSearchResultCache() {
+    state.searchResultCache.clear();
+    state.lastRenderedSearchSignature = "";
+    state.lastSubmittedSearchSignature = "";
+  }
+
+  function getActiveTimerCount() {
+    return [
+      state.searchTimer,
+      state.searchWatchdogTimer,
+      state.searchTimeoutTimer,
+      state.onlinePrefixSaveTimer
+    ].filter(Boolean).length;
+  }
+
+  function getMemorySnapshot() {
+    const memory = typeof performance !== "undefined" && performance.memory;
+    if (!memory) {
+      return null;
+    }
+    return {
+      usedMb: Math.round((memory.usedJSHeapSize / 1024 / 1024) * 10) / 10,
+      totalMb: Math.round((memory.totalJSHeapSize / 1024 / 1024) * 10) / 10
+    };
+  }
+
+  function logSearchTrace(phase, details) {
+    const payload = {
+      phase,
+      ...(details || {}),
+      inFlight: state.searchInFlight ? 1 : 0,
+      timers: getActiveTimerCount(),
+      onlineRequests: state.onlinePrefixRequests.size,
+      cacheSize: state.searchResultCache.size,
+      listeners: state.searchMetrics.criticalListeners,
+      memory: getMemorySnapshot()
+    };
+    console.debug("[search-trace]", payload);
+  }
+
+  function startSearchMetricsLogger() {
+    window.setInterval(() => {
+      trimSearchResultCache();
+      logSearchTrace("runtime", {
+        metrics: { ...state.searchMetrics }
+      });
+    }, SEARCH_METRICS_LOG_INTERVAL_MS);
+  }
+
   function startSearchWatchdog(requestId) {
     clearSearchWatchdog();
     state.searchWatchdogTimer = window.setTimeout(() => {
@@ -2209,11 +2493,29 @@ function initApp(core) {
       }
       setBusy(true, "검색중...");
     }, SEARCH_SLOW_NOTICE_MS);
+    state.searchTimeoutTimer = window.setTimeout(() => {
+      if (!state.searchInFlight || state.searchRequestId !== requestId) {
+        return;
+      }
+      const restarted = cancelActiveSearch("timeout");
+      if (restarted) {
+        const query = String(elements.queryInput.value || "").trim();
+        if (query) {
+          renderPendingSearch(query);
+        }
+        return;
+      }
+      state.pendingSearch = false;
+      setBusy(false, "검색 시간 초과");
+      renderEmpty("검색 응답이 지연되어 취소했습니다. 다시 검색해 주세요.");
+    }, SEARCH_TIMEOUT_MS);
   }
 
   function clearSearchWatchdog() {
     window.clearTimeout(state.searchWatchdogTimer);
     state.searchWatchdogTimer = 0;
+    window.clearTimeout(state.searchTimeoutTimer);
+    state.searchTimeoutTimer = 0;
   }
 
   function getSearchSignature(query) {
@@ -3521,6 +3823,16 @@ function initApp(core) {
   }
 
   async function fetchOpendictEndpoint(url, query, method, signal) {
+    const proxyUrl = getOpendictProxyUrl();
+    const isProxyRequest = Boolean(proxyUrl && String(url).startsWith(proxyUrl));
+    const traceId = isProxyRequest ? createTraceId(state.onlineLookupId || state.requestId || 0) : "";
+    if (isProxyRequest) {
+      logSearchTrace("opendict-request", {
+        traceId,
+        method,
+        queryLength: String(query || "").length
+      });
+    }
     const response = await fetchWithTimeout(
       url,
       {
@@ -3529,7 +3841,8 @@ function initApp(core) {
         credentials: "omit",
         referrerPolicy: "no-referrer",
         headers: {
-          Accept: "application/json"
+          Accept: "application/json",
+          ...(traceId ? { "X-Trace-Id": traceId } : {})
         }
       },
       ONLINE_API_FETCH_TIMEOUT_MS
@@ -4556,7 +4869,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260618-sharded-index-lazy-custom-fix3", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260619-search-stability", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
