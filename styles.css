@@ -519,6 +519,26 @@ h2 {
   padding: 8px 18px;
 }
 
+.empty-warning .message-body {
+  color: var(--yellow);
+}
+
+.empty-error .message-body {
+  color: #ffb4b6;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.empty-retry-button {
+  min-width: 82px;
+  padding: 0 12px;
+}
+
 .result-message:hover {
   background: var(--chat-soft);
 }

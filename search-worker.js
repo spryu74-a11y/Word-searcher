@@ -5,6 +5,7 @@ const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260619-input
 const SHARD_BASE_URL = "./data/search-index-shards/";
 const SHARD_VERSION = "modern-search-index-shards-20260619-input-loading-fixes";
 const DEFAULT_LIMIT = 260;
+const MAX_SEARCH_QUERY_LENGTH = 80;
 const ENTRY_WORD = 0;
 const ENTRY_READING = 1;
 const ENTRY_LANGUAGE = 2;
@@ -189,6 +190,9 @@ async function ensureIndex() {
         return response.json();
       })
       .then((payload) => {
+        if (!payload || typeof payload !== "object") {
+          throw new Error("검색 인덱스 manifest 구조가 올바르지 않습니다");
+        }
         useFullIndex = false;
         shardFiles = Object.create(null);
         for (const [start, info] of Object.entries(payload.shards || {})) {
@@ -208,7 +212,14 @@ async function ensureIndex() {
         runtimeStats = { ...baseStats, buildMs: 0 };
         return payload;
       })
-      .catch(() => loadFullIndex());
+      .catch((error) => {
+        warnWorker("manifest 로딩 실패, 전체 인덱스로 전환합니다", error);
+        return loadFullIndex();
+      })
+      .catch((error) => {
+        indexPromise = null;
+        throw error;
+      });
   }
   return indexPromise;
 }
@@ -222,12 +233,15 @@ function loadFullIndex() {
       return response.json();
     })
     .then((payload) => {
+      if (!payload || typeof payload !== "object") {
+        throw new Error("검색 인덱스 구조가 올바르지 않습니다");
+      }
       useFullIndex = true;
       shardFiles = Object.create(null);
       shardPromises = new Map();
       loadedShardMeta = new Map();
-      baseEntries = payload.entries || [];
-      baseBuckets = payload.buckets || Object.create(null);
+      baseEntries = Array.isArray(payload.entries) ? payload.entries : [];
+      baseBuckets = payload.buckets && typeof payload.buckets === "object" ? payload.buckets : Object.create(null);
       baseStats = payload.stats || createEmptyStats();
       defaultMeta = payload.meta || null;
       buildBaseKeyMap();
@@ -243,7 +257,13 @@ async function loadShards(starts, signal) {
     return;
   }
   const uniqueStarts = Array.from(new Set((starts || []).filter(Boolean)));
-  await Promise.all(uniqueStarts.map((start) => loadShard(start, signal).catch(() => {})));
+  await Promise.all(
+    uniqueStarts.map((start) =>
+      loadShard(start, signal).catch((error) => {
+        warnWorker(`검색 shard 로딩 실패: ${start}`, error);
+      })
+    )
+  );
   throwIfAborted(signal);
   trimShardCache(uniqueStarts);
 }
@@ -271,12 +291,24 @@ async function loadShard(start, signal) {
       })
       .then((payload) => {
         const indices = [];
-        for (const row of payload.entries || []) {
+        const rows = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (!payload || typeof payload !== "object" || !Array.isArray(payload.entries)) {
+          warnWorker(`검색 shard 구조가 올바르지 않습니다: ${start}`, payload);
+        }
+        for (const row of rows) {
+          if (!Array.isArray(row) || row.length <= ENTRY_CATEGORY + 1) {
+            warnWorker(`검색 shard 항목을 무시했습니다: ${start}`, row);
+            continue;
+          }
           const index = Number(row[0]);
           if (!Number.isFinite(index)) {
             continue;
           }
           const packed = row.slice(1);
+          if (!packed[ENTRY_WORD] || !packed[ENTRY_READING]) {
+            warnWorker(`검색 shard 필수 필드가 없어 무시했습니다: ${start}`, row);
+            continue;
+          }
           baseEntries[index] = packed;
           baseByKey.set(normalizeKey(packed[ENTRY_WORD]), index);
           indices.push(index);
@@ -517,6 +549,7 @@ function createEmptyStats() {
 }
 
 async function searchDictionary(options, context) {
+  options = options && typeof options === "object" ? options : {};
   const signal = context && context.signal;
   const traceId = (context && context.traceId) || "";
   const started = now();
@@ -525,6 +558,15 @@ async function searchDictionary(options, context) {
   const page = Number(options.page || 1);
   const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
   const parseStarted = now();
+  if (!validateSearchQuery(options.query)) {
+    const queryInfo = getQueryInfo("", sourceMode);
+    return {
+      queryInfo,
+      ...createEmptyResults(pageSize, page),
+      elapsedMs: 0,
+      timing: { parseMs: elapsed(parseStarted), shardMs: 0, searchMs: 0, stateMs: 0 }
+    };
+  }
   const queryInfo = getQueryInfo(options.query, sourceMode);
   const exactWord = normalizeKey(options.query || "");
   const exactReading = queryInfo.reading;
@@ -593,7 +635,9 @@ async function searchDictionary(options, context) {
   const visibleStates = collected.visibleIndices.map((index) => getEntryState(index, searchOptions));
   const stateMs = elapsed(t3);
 
-  loadShards(getCounterShardStarts(visibleStates)).catch(() => {});
+  loadShards(getCounterShardStarts(visibleStates)).catch((error) => {
+    warnWorker("반격 단어 shard 사전 로딩 실패", error);
+  });
   const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, false));
 
   const totalMs = elapsed(started);
@@ -701,6 +745,13 @@ function logWorkerTrace(traceId, phase, timing, total) {
     loadedShards: loadedShardMeta.size,
     resultCacheSize: searchResultCache.size
   });
+}
+
+function warnWorker(message, details) {
+  if (typeof console === "undefined" || typeof console.warn !== "function") {
+    return;
+  }
+  console.warn("[search-worker]", message, details || "");
 }
 
 function createSearchOptions(options) {
@@ -1415,7 +1466,7 @@ function getQueryInfo(query, sourceMode) {
   }
 
   if (sourceMode === "reply") {
-    const last = reading[reading.length - 1];
+    const last = getLastSyllable(reading);
     return {
       reading,
       prefixes: [],
@@ -1482,11 +1533,28 @@ function composeSyllable(lead, vowel, trail) {
 }
 
 function toReading(value) {
-  const compact = String(value || "").trim().replace(/\s+/g, "");
+  const compact = normalizeSearchQuery(value);
   if (/^[A-Za-z]+$/.test(compact)) {
     return englishToHangul(compact);
   }
   return cleanHangul(compact);
+}
+
+function normalizeSearchQuery(value) {
+  return normalizeNfc(value).trim().replace(/\s+/g, "");
+}
+
+function validateSearchQuery(value) {
+  const query = normalizeSearchQuery(value);
+  if (!query || query.length > MAX_SEARCH_QUERY_LENGTH) {
+    return false;
+  }
+  return Boolean(toReading(query));
+}
+
+function getLastSyllable(reading) {
+  const text = String(reading || "");
+  return text ? text[text.length - 1] : "";
 }
 
 function englishToHangul(value) {
@@ -1544,10 +1612,15 @@ function englishToHangul(value) {
 }
 
 function cleanHangul(value) {
-  const normalized = String(value || "").normalize("NFC");
+  const normalized = normalizeNfc(value);
   return Array.from(normalized)
     .filter(isHangulSyllable)
     .join("");
+}
+
+function normalizeNfc(value) {
+  const text = String(value == null ? "" : value);
+  return typeof text.normalize === "function" ? text.normalize("NFC") : text;
 }
 
 function isHangulSyllable(char) {
@@ -1559,7 +1632,7 @@ function isHangulSyllable(char) {
 }
 
 function normalizeWord(value) {
-  return String(value || "").replace(/\s+/g, "").trim();
+  return normalizeNfc(value).replace(/\s+/g, "").trim();
 }
 
 function normalizeKey(value) {
@@ -1715,7 +1788,7 @@ function entryStart(index) {
 
 function entryEnd(index) {
   const reading = entryReading(index);
-  return reading[reading.length - 1];
+  return getLastSyllable(reading);
 }
 
 function now() {

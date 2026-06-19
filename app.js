@@ -24,6 +24,7 @@
   const TRAILING_RIEUL = 8;
   const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
   const DEFAULT_LIMIT = 260;
+  const MAX_SEARCH_QUERY_LENGTH = 80;
   const MAX_COUNTER_REPLY_WORDS = 12;
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
@@ -306,10 +307,15 @@
   }
 
   function cleanHangul(value) {
-    const normalized = String(value || "").normalize("NFC");
+    const normalized = normalizeNfc(value);
     return Array.from(normalized)
       .filter(isHangulSyllable)
       .join("");
+  }
+
+  function normalizeNfc(value) {
+    const text = String(value == null ? "" : value);
+    return typeof text.normalize === "function" ? text.normalize("NFC") : text;
   }
 
   function cleanEnglish(value) {
@@ -384,11 +390,71 @@
   }
 
   function toReading(value) {
-    const compact = String(value || "").trim().replace(/\s+/g, "");
+    const compact = normalizeSearchQuery(value);
     if (/^[A-Za-z]+$/.test(compact)) {
       return englishToHangul(compact);
     }
     return cleanHangul(compact);
+  }
+
+  function normalizeSearchQuery(value) {
+    return normalizeNfc(value).trim().replace(/\s+/g, "");
+  }
+
+  function validateSearchQuery(value, options) {
+    const maxLength = Math.max(
+      1,
+      Math.floor(Number(options && options.maxLength)) || MAX_SEARCH_QUERY_LENGTH
+    );
+    const query = normalizeSearchQuery(value);
+
+    if (!query) {
+      return {
+        ok: false,
+        reason: "empty",
+        query: "",
+        reading: "",
+        message: "검색어를 입력해 주세요."
+      };
+    }
+
+    if (query.length > maxLength) {
+      return {
+        ok: false,
+        reason: "too_long",
+        query,
+        reading: "",
+        message: `검색어는 ${maxLength}자 이하로 입력해 주세요.`
+      };
+    }
+
+    const reading = toReading(query);
+    if (!reading) {
+      return {
+        ok: false,
+        reason: "invalid",
+        query,
+        reading: "",
+        message: "검색할 한글 또는 영문 단어를 입력해 주세요."
+      };
+    }
+
+    return {
+      ok: true,
+      reason: "ok",
+      query,
+      reading,
+      message: ""
+    };
+  }
+
+  function getLastSyllable(reading) {
+    const text = String(reading || "");
+    return text ? text[text.length - 1] : "";
+  }
+
+  function getLastReadingSyllable(value) {
+    return getLastSyllable(toReading(value));
   }
 
   function parseDictionaryLine(line) {
@@ -415,7 +481,7 @@
   }
 
   function normalizeEntry(raw) {
-    const word = String(raw.word || "").replace(/\s+/g, "");
+    const word = normalizeNfc(raw.word).replace(/\s+/g, "");
     let language = "";
     let reading = raw.reading;
 
@@ -881,7 +947,7 @@
     }
 
     if (sourceMode === "reply") {
-      const last = reading[reading.length - 1];
+      const last = getLastSyllable(reading);
       return {
         reading,
         prefixes: [],
@@ -923,6 +989,205 @@
       pageCount: 1,
       results: []
     };
+  }
+
+  function normalizeSearchPayload(payload, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const sourceMode = opts.sourceMode === "reply" ? "reply" : "starts";
+    const fallbackQueryInfo = getQueryInfo(opts.query || "", sourceMode);
+    const warnings = [];
+    const raw = payload && typeof payload === "object" ? payload : {};
+
+    if (raw !== payload) {
+      warnings.push("payload-not-object");
+    }
+
+    const pageSize = toPositiveInteger(raw.pageSize || raw.limit, opts.pageSize || DEFAULT_LIMIT);
+    const results = normalizeSearchResultEntries(raw.results, warnings);
+    const total = Math.max(toNonNegativeInteger(raw.total, results.length), results.length);
+    const pageCount = Math.max(
+      1,
+      toPositiveInteger(raw.pageCount, Math.ceil(total / pageSize) || 1)
+    );
+    const page = Math.min(pageCount, toPositiveInteger(raw.page, opts.page || 1));
+
+    return {
+      queryInfo: normalizePayloadQueryInfo(raw.queryInfo, fallbackQueryInfo, sourceMode, warnings),
+      total,
+      categoryCounts: normalizeCategoryCounts(raw.categoryCounts),
+      limit: pageSize,
+      page,
+      pageSize,
+      pageCount,
+      results,
+      elapsedMs: toNonNegativeNumber(raw.elapsedMs, 0),
+      timing: raw.timing && typeof raw.timing === "object" ? raw.timing : {},
+      warnings
+    };
+  }
+
+  function normalizePayloadQueryInfo(queryInfo, fallback, sourceMode, warnings) {
+    const raw = queryInfo && typeof queryInfo === "object" ? queryInfo : {};
+    if (raw !== queryInfo && queryInfo != null) {
+      warnings.push("query-info-not-object");
+    }
+
+    const reading = cleanHangul(raw.reading) || fallback.reading || "";
+    const starts = normalizeSyllableList(raw.starts);
+    const prefixes = normalizePrefixList(raw.prefixes);
+    const display = String(raw.display || fallback.display || "-");
+
+    return {
+      reading,
+      prefixes: prefixes.length ? prefixes : fallback.prefixes || [],
+      starts: starts.length ? starts : fallback.starts || [],
+      display: display || (sourceMode === "reply" ? getLastSyllable(reading) : reading) || "-"
+    };
+  }
+
+  function normalizeSearchResultEntries(results, warnings) {
+    if (!Array.isArray(results)) {
+      if (results != null) {
+        warnings.push("results-not-array");
+      }
+      return [];
+    }
+
+    const normalized = [];
+    for (const entry of results) {
+      const result = normalizeSearchResultEntry(entry, warnings);
+      if (result) {
+        normalized.push(result);
+      }
+    }
+    return normalized;
+  }
+
+  function normalizeSearchResultEntry(entry, warnings) {
+    if (!entry || typeof entry !== "object") {
+      warnings.push("result-entry-not-object");
+      return null;
+    }
+
+    const word = normalizeNfc(entry.word || entry.key || entry.reading).trim();
+    const reading = cleanHangul(entry.reading) || toReading(word);
+    const displayWord = word || reading;
+    if (!displayWord || !reading) {
+      warnings.push("result-entry-missing-word");
+      return null;
+    }
+
+    const start = cleanHangul(entry.start)[0] || reading[0] || "";
+    const end = cleanHangul(entry.end)[0] || getLastSyllable(reading);
+    const allowedAfter = normalizeSyllableList(entry.allowedAfter);
+
+    return {
+      key: normalizeNfc(entry.key || displayWord).trim().toLowerCase(),
+      word: displayWord,
+      language: entry.language === "en" ? "en" : "ko",
+      reading,
+      start,
+      end,
+      allowedAfter: allowedAfter.length ? allowedAfter : end ? getAllowedStartSyllables(end) : [],
+      followerCount: toNonNegativeInteger(entry.followerCount, 0),
+      oneShotReplyCount: toNonNegativeInteger(entry.oneShotReplyCount, 0),
+      alternativeOneShotReplyCount: toNonNegativeInteger(entry.alternativeOneShotReplyCount, 0),
+      oneShot: Boolean(entry.oneShot),
+      alternativeOneShot: Boolean(entry.alternativeOneShot),
+      blunder: Boolean(entry.blunder),
+      oneShotReplyWords: normalizeWordList(entry.oneShotReplyWords),
+      alternativeOneShotReplyWords: normalizeWordList(entry.alternativeOneShotReplyWords)
+    };
+  }
+
+  function normalizeCategoryCounts(value) {
+    const raw = value && typeof value === "object" ? value : {};
+    return {
+      oneShot: toNonNegativeInteger(raw.oneShot, 0),
+      alternativeOneShot: toNonNegativeInteger(raw.alternativeOneShot, 0),
+      connection: toNonNegativeInteger(raw.connection, 0),
+      blunder: toNonNegativeInteger(raw.blunder, 0)
+    };
+  }
+
+  function normalizeSyllableList(value) {
+    const values = Array.isArray(value) ? value : [];
+    const result = [];
+    const seen = new Set();
+    for (const item of values) {
+      const syllable = cleanHangul(item)[0] || "";
+      if (!syllable || seen.has(syllable)) {
+        continue;
+      }
+      seen.add(syllable);
+      result.push(syllable);
+    }
+    return result;
+  }
+
+  function normalizePrefixList(value) {
+    const values = Array.isArray(value) ? value : [];
+    const result = [];
+    const seen = new Set();
+    for (const item of values) {
+      const prefix = toReading(item);
+      if (!prefix || seen.has(prefix)) {
+        continue;
+      }
+      seen.add(prefix);
+      result.push(prefix);
+    }
+    return result;
+  }
+
+  function normalizeWordList(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const result = [];
+    const seen = new Set();
+    for (const item of value) {
+      const word = normalizeNfc(item).trim();
+      const key = word.toLowerCase();
+      if (!word || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      result.push(word);
+    }
+    return result;
+  }
+
+  function toPositiveInteger(value, fallback) {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number > 0 ? number : Math.max(1, Math.floor(Number(fallback)) || 1);
+  }
+
+  function toNonNegativeInteger(value, fallback) {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number >= 0 ? number : Math.max(0, Math.floor(Number(fallback)) || 0);
+  }
+
+  function toNonNegativeNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : Math.max(0, Number(fallback) || 0);
+  }
+
+  function getSearchErrorMessage(error) {
+    const name = String((error && error.name) || "");
+    const message = String((error && error.message) || error || "");
+    const combined = `${name} ${message}`;
+
+    if (/abort/i.test(combined)) {
+      return "이전 검색을 취소했습니다.";
+    }
+    if (/timeout|time out|timed out|시간 초과|지연/i.test(combined)) {
+      return "검색 응답이 지연되어 취소했습니다. 다시 시도해 주세요.";
+    }
+    if (/fetch|network|load|status|api|manifest|shard|인덱스|네트워크|불러오/i.test(combined)) {
+      return "검색 데이터를 불러오지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.";
+    }
+    return "검색 중 문제가 발생했습니다. 다시 시도해 주세요.";
   }
 
   function collectResults(
@@ -1444,6 +1709,8 @@
   }
 
   function searchDictionary(dictionary, options) {
+    options = options && typeof options === "object" ? options : {};
+    dictionary = dictionary || createDictionary("");
     const started = now();
     const pageSize = Number(options.pageSize || options.limit || DEFAULT_LIMIT);
     const page = Number(options.page || 1);
@@ -1540,17 +1807,23 @@
   return {
     __factory: createCore,
     FALLBACK_DICTIONARY,
+    MAX_SEARCH_QUERY_LENGTH,
     cleanHangul,
     createDictionary,
     englishToHangul,
     extendDictionary,
     getAllowedStartSyllables,
+    getLastReadingSyllable,
     getQueryInfo,
+    getSearchErrorMessage,
     getSearchPrefixes,
     isCombinedHangulLetterName,
+    normalizeSearchPayload,
+    normalizeSearchQuery,
     searchDictionary,
     selectOnlineWords,
-    toReading
+    toReading,
+    validateSearchQuery
   };
 });
 
@@ -1608,6 +1881,7 @@ function initApp(core) {
   const SEARCH_WORKER_RESTART_AFTER_MS = 1200;
   const SEARCH_DEBOUNCE_MS = 300;
   const SEARCH_MIN_QUERY_LENGTH = 1;
+  const SEARCH_MAX_QUERY_LENGTH = core.MAX_SEARCH_QUERY_LENGTH || 80;
   const SEARCH_RESULT_CACHE_MAX = 128;
   const SEARCH_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
   const SEARCH_METRICS_LOG_INTERVAL_MS = 15000;
@@ -1722,6 +1996,8 @@ function initApp(core) {
     lastSubmittedSearchSignature: "",
     pendingSearch: false,
     appLoading: true,
+    searchBusy: false,
+    isComposing: false,
     observedQuery: "",
     searchMetrics: {
       inputEvents: 0,
@@ -1758,6 +2034,7 @@ function initApp(core) {
   updateOpendictState();
 
   attachWorkerHandlers(state.worker);
+  attachGlobalErrorHandlers();
 
   function attachWorkerHandlers(worker) {
     worker.onmessage = handleWorkerMessage;
@@ -1765,8 +2042,39 @@ function initApp(core) {
     worker.onmessageerror = handleWorkerMessageError;
   }
 
+  function attachGlobalErrorHandlers() {
+    window.addEventListener("error", (event) => {
+      if (!event || (!event.error && !event.message)) {
+        return;
+      }
+      if (typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      logSearchIssue("전역 오류", event && (event.error || event.message));
+      handleRecoverableSearchError("앱에서 오류가 발생했습니다. 다시 검색해 주세요.", {
+        retry: true
+      });
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      logSearchIssue("비동기 오류", event && event.reason);
+      handleRecoverableSearchError("비동기 처리 중 오류가 발생했습니다. 다시 검색해 주세요.", {
+        retry: true
+      });
+    });
+  }
+
   function handleWorkerMessage(event) {
-    const message = event.data;
+    const message = normalizeWorkerMessage(event && event.data);
+    if (!message) {
+      handleRecoverableSearchError("검색 엔진 응답을 읽지 못했습니다.", {
+        retry: true,
+        devDetails: event && event.data
+      });
+      return;
+    }
     if (message.type === "built") {
       state.workerReady = true;
       state.searchInFlight = false;
@@ -1805,18 +2113,26 @@ function initApp(core) {
         return;
       }
       state.pendingSearch = false;
-      putSearchResultCache(state.searchSignature, message.payload);
+      const payload = core.normalizeSearchPayload(message.payload, {
+        query: currentQuery,
+        sourceMode: state.sourceMode,
+        page: state.page,
+        pageSize: getPageSize()
+      });
+      logPayloadWarnings(payload.warnings, message);
+      putSearchResultCache(state.searchSignature, payload);
+      setBusy(false, "검색 완료");
       const renderStart = performance.now();
-      renderSearch(message.payload);
+      renderSearch(payload);
       state.lastRenderedSearchSignature = state.searchSignature;
       state.searchMetrics.completed += 1;
       const renderMs = Math.round(performance.now() - renderStart);
       const totalMs = Math.round(performance.now() - (state._searchStartTime || 0));
-      const t = message.payload && message.payload.timing;
+      const t = payload && payload.timing;
       console.debug(
-        `[검색 타이밍] 총=${totalMs}ms | worker=${message.payload && message.payload.elapsedMs}ms` +
+        `[검색 타이밍] 총=${totalMs}ms | worker=${payload && payload.elapsedMs}ms` +
         (t ? ` (shard=${t.shardMs}ms search=${t.searchMs}ms follower=${t.followerMs || 0}ms state=${t.stateMs}ms)` : "") +
-        ` | render=${renderMs}ms | 결과=${message.payload && message.payload.total}건`
+        ` | render=${renderMs}ms | 결과=${payload && payload.total}건`
       );
       return;
     }
@@ -1855,9 +2171,19 @@ function initApp(core) {
       state.searchInFlight = false;
       state.searchAbortController = null;
       state.searchMetrics.failed += 1;
-      setLoadingState(false, "오류");
-      setBusy(false, "오류");
-      renderEmpty(message.message || "처리 중 오류가 났습니다");
+      handleRecoverableSearchError(core.getSearchErrorMessage(message.message), {
+        retry: true,
+        devDetails: message.message
+      });
+      return;
+    }
+
+    logSearchIssue("알 수 없는 워커 메시지", message);
+    if (state.searchInFlight) {
+      handleRecoverableSearchError("검색 엔진 응답을 처리하지 못했습니다.", {
+        retry: true,
+        devDetails: message
+      });
     }
   }
 
@@ -1871,10 +2197,10 @@ function initApp(core) {
     state.searchMetrics.failed += 1;
     clearSearchWatchdog();
     state.pendingSearch = false;
-    setLoadingState(false, "검색 오류");
-    setBusy(false, "검색 오류");
-    const message = event && event.message ? event.message : "검색 엔진을 시작하지 못했습니다";
-    renderEmpty(message);
+    handleRecoverableSearchError(core.getSearchErrorMessage(event && event.message), {
+      retry: true,
+      devDetails: event
+    });
   }
 
   function handleWorkerMessageError() {
@@ -1887,9 +2213,51 @@ function initApp(core) {
     state.searchMetrics.failed += 1;
     clearSearchWatchdog();
     state.pendingSearch = false;
+    handleRecoverableSearchError("검색 결과를 읽지 못했습니다. 다시 시도해 주세요.", {
+      retry: true,
+      devDetails: "worker message error"
+    });
+  }
+
+  function normalizeWorkerMessage(data) {
+    if (!data || typeof data !== "object" || typeof data.type !== "string") {
+      return null;
+    }
+    return data;
+  }
+
+  function logPayloadWarnings(warnings, message) {
+    if (!Array.isArray(warnings) || !warnings.length) {
+      return;
+    }
+    logSearchIssue("검색 응답 구조 보정", {
+      warnings,
+      id: message && message.id,
+      type: message && message.type
+    });
+  }
+
+  function handleRecoverableSearchError(userMessage, options) {
+    const opts = options || {};
+    clearSearchWatchdog();
+    state.searchInFlight = false;
+    state.searchAbortController = null;
+    state.pendingSearch = false;
     setLoadingState(false, "검색 오류");
     setBusy(false, "검색 오류");
-    renderEmpty("검색 결과를 읽지 못했습니다");
+    if (opts.devDetails) {
+      logSearchIssue(userMessage, opts.devDetails);
+    }
+    renderError(userMessage || "검색 중 문제가 발생했습니다. 다시 시도해 주세요.", {
+      retry: Boolean(opts.retry)
+    });
+  }
+
+  function logSearchIssue(message, details) {
+    if (typeof console === "undefined" || typeof console.warn !== "function") {
+      return;
+    }
+    console.warn("[검색 안정성]", message, details || "");
   }
 
   function recoverSearchWorker(reason) {
@@ -1961,15 +2329,21 @@ function initApp(core) {
     requestInputSearch(0, false);
   });
   addSearchEventListener(elements.queryInput, "compositionstart", () => {
-    requestInputSearch(SEARCH_DEBOUNCE_MS, false);
+    state.isComposing = true;
+    state.observedQuery = elements.queryInput.value;
   });
   addSearchEventListener(elements.queryInput, "compositionend", () => {
+    state.isComposing = false;
     requestInputSearch(0, true);
   });
   addSearchEventListener(elements.queryInput, "blur", () => {
     requestInputSearch(0, false);
   });
   addSearchEventListener(elements.queryInput, "input", () => {
+    if (state.isComposing) {
+      state.observedQuery = elements.queryInput.value;
+      return;
+    }
     requestInputSearch(SEARCH_DEBOUNCE_MS, true);
   });
   addSearchEventListener(elements.queryInput, "search", () => {
@@ -2270,8 +2644,29 @@ function initApp(core) {
       animateResultListToTop();
     }
     state.pendingSearch = true;
-    const query = String(elements.queryInput.value || "").trim();
+    if (state.isComposing) {
+      return;
+    }
+
+    const validation = getSearchInputValidation();
+    const query = validation.query;
     const nextSignature = query ? getSearchSignature(query) : "";
+    if (!validation.ok) {
+      cancelActiveSearch(validation.reason === "empty" ? "empty-query" : "invalid-query");
+      window.clearTimeout(state.searchTimer);
+      state.pendingSearch = false;
+      if (validation.reason === "empty") {
+        setBusy(false, state.workerReady ? "단어팩 준비됨" : "단어팩 준비중");
+        if (state.appLoading && !state.workerReady) {
+          renderLoadingScreen("단어팩을 불러오는 중입니다");
+        } else {
+          renderStartScreen();
+        }
+      } else {
+        renderValidationError(validation);
+      }
+      return;
+    }
     if (state.searchInFlight && nextSignature && nextSignature !== state.searchSignature) {
       cancelActiveSearch("superseded");
     }
@@ -2289,9 +2684,20 @@ function initApp(core) {
     state.searchTimer = window.setTimeout(runSearch, Math.max(0, Number(delay) || 0));
   }
 
+  function getSearchInputValidation() {
+    return core.validateSearchQuery(elements.queryInput.value, {
+      maxLength: SEARCH_MAX_QUERY_LENGTH
+    });
+  }
+
   function runSearch() {
-    const query = String(elements.queryInput.value || "").trim();
-    if (!query || query.length < SEARCH_MIN_QUERY_LENGTH) {
+    if (state.isComposing) {
+      state.pendingSearch = true;
+      return;
+    }
+    const validation = getSearchInputValidation();
+    const query = validation.query;
+    if (!validation.ok || query.length < SEARCH_MIN_QUERY_LENGTH) {
       state.pendingSearch = false;
       state.searchInFlight = false;
       state.searchRequestId = 0;
@@ -2300,7 +2706,12 @@ function initApp(core) {
       state.lastRenderedSearchSignature = "";
       state.searchAbortController = null;
       clearSearchWatchdog();
-      renderStartScreen();
+      setBusy(false, validation.reason === "empty" ? "단어팩 준비됨" : "입력 확인");
+      if (validation.reason === "empty") {
+        renderStartScreen();
+      } else {
+        renderValidationError(validation);
+      }
       return;
     }
     if (!state.workerReady) {
@@ -2315,6 +2726,7 @@ function initApp(core) {
     if (cachedPayload) {
       state.pendingSearch = false;
       state.searchMetrics.cacheHits += 1;
+      setBusy(false, "검색 완료");
       renderSearch(cachedPayload);
       state.lastRenderedSearchSignature = signature;
       logSearchTrace("cache-hit", {
@@ -2326,6 +2738,7 @@ function initApp(core) {
     if (signature === state.lastRenderedSearchSignature && !state.searchInFlight) {
       state.pendingSearch = false;
       state.searchMetrics.skipped += 1;
+      setBusy(false, "검색 완료");
       return;
     }
     if (state.searchInFlight && signature === state.searchSignature) {
@@ -2347,6 +2760,7 @@ function initApp(core) {
     state.searchAbortController = controller;
     state._searchStartTime = performance.now();
     state.searchMetrics.started += 1;
+    setBusy(true, "검색중...");
     logSearchTrace("request-start", {
       traceId,
       requestId,
@@ -2566,7 +2980,9 @@ function initApp(core) {
       }
       state.pendingSearch = false;
       setBusy(false, "검색 시간 초과");
-      renderEmpty("검색 응답이 지연되어 취소했습니다. 다시 검색해 주세요.");
+      renderError(core.getSearchErrorMessage({ name: "TimeoutError" }), {
+        retry: true
+      });
     }, SEARCH_TIMEOUT_MS);
   }
 
@@ -4807,7 +5223,7 @@ function initApp(core) {
     meta.append(
       createMeta("시작", entry.start),
       createMeta("끝", entry.end),
-      createMeta("상대", entry.allowedAfter.join(", ")),
+      createMeta("상대", (entry.allowedAfter || []).join(", ")),
       createMeta("후속", formatNumber(entry.followerCount)),
       createMeta("한방반격", formatNumber(entry.oneShotReplyCount)),
       createMeta("대체반격", formatNumber(entry.alternativeOneShotReplyCount))
@@ -4920,6 +5336,42 @@ function initApp(core) {
     return "gray";
   }
 
+  function renderValidationError(validation) {
+    state.page = 1;
+    elements.readingPreview.textContent = "-";
+    elements.allowedPreview.textContent = "-";
+    elements.resultMeta.textContent = "입력 확인";
+    setBusy(false, "입력 확인");
+    renderEmpty(validation && validation.message ? validation.message : "검색어를 확인해 주세요.", {
+      tone: "warning"
+    });
+  }
+
+  function renderError(text, options) {
+    renderEmpty("", {
+      tone: "error",
+      renderBody(body) {
+        const message = document.createElement("span");
+        message.textContent = text || "검색 중 문제가 발생했습니다. 다시 시도해 주세요.";
+        body.appendChild(message);
+
+        if (options && options.retry) {
+          const actions = document.createElement("div");
+          actions.className = "empty-actions";
+          const retry = document.createElement("button");
+          retry.className = "secondary-button empty-retry-button";
+          retry.type = "button";
+          retry.textContent = "다시 시도";
+          retry.addEventListener("click", () => {
+            scheduleSearch(0, false);
+          });
+          actions.appendChild(retry);
+          body.appendChild(actions);
+        }
+      }
+    });
+  }
+
   function renderEmpty(text, options) {
     if (!(options && options.keepPager)) {
       elements.resultPager.hidden = true;
@@ -4928,6 +5380,9 @@ function initApp(core) {
     elements.resultList.textContent = "";
     const row = document.createElement("div");
     row.className = "empty-message";
+    if (options && options.tone) {
+      row.classList.add(`empty-${options.tone}`);
+    }
     const avatar = document.createElement("div");
     avatar.className = "word-avatar";
     avatar.textContent = "#";
@@ -4943,18 +5398,20 @@ function initApp(core) {
   }
 
   function setBusy(isBusy, label) {
+    state.searchBusy = Boolean(isBusy);
     if (label) {
       elements.buildState.textContent = label;
     }
-    const disabled = Boolean(isBusy || state.appLoading);
+    const disabled = Boolean(state.searchBusy || state.appLoading);
     elements.searchButton.disabled = disabled;
     elements.applyDictionary.disabled = disabled;
+    elements.resultList.setAttribute("aria-busy", state.appLoading || state.searchBusy ? "true" : "false");
   }
 
   function setLoadingState(isLoading, label) {
     state.appLoading = Boolean(isLoading);
     document.body.classList.toggle("app-loading", state.appLoading);
-    elements.resultList.setAttribute("aria-busy", state.appLoading ? "true" : "false");
+    elements.resultList.setAttribute("aria-busy", state.appLoading || state.searchBusy ? "true" : "false");
     elements.queryInput.disabled = state.appLoading;
     elements.queryInput.setAttribute("aria-disabled", state.appLoading ? "true" : "false");
     elements.oneShotOnly.disabled = state.appLoading;
@@ -4977,7 +5434,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260619-input-loading-fixes", window.location.href)
+      new URL("./search-worker.js?v=search-stability-20260619", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

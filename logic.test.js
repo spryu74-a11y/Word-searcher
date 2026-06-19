@@ -550,4 +550,83 @@ const standardValueEntry = standardValue.results.find((entry) => entry.word === 
 assert.ok(standardValueEntry);
 assert.ok(!standardValueEntry.alternativeOneShot);
 
+const emptyInputValidation = logic.validateSearchQuery("   ");
+assert.strictEqual(emptyInputValidation.ok, false);
+assert.strictEqual(emptyInputValidation.reason, "empty");
+
+const specialInputValidation = logic.validateSearchQuery("!!!123ㄱㄴ");
+assert.strictEqual(specialInputValidation.ok, false);
+assert.strictEqual(specialInputValidation.reason, "invalid");
+
+const longInputValidation = logic.validateSearchQuery("가".repeat(logic.MAX_SEARCH_QUERY_LENGTH + 1));
+assert.strictEqual(longInputValidation.ok, false);
+assert.strictEqual(longInputValidation.reason, "too_long");
+
+const nfdQuery = "\u1100\u1161\u1102\u1161";
+assert.strictEqual(logic.validateSearchQuery(nfdQuery).ok, true);
+assert.strictEqual(logic.toReading(nfdQuery), "가나");
+assert.strictEqual(logic.getLastReadingSyllable("계란"), "란");
+assert.deepStrictEqual(logic.getQueryInfo("계란", "reply").starts, ["란", "난"]);
+const nfdDictionary = logic.createDictionary(["\u1100\u1161\u1102\u1161", "나무"].join("\n"));
+assert.ok(nfdDictionary.entries.some((entry) => entry.word === "가나"));
+
+const noResultSearch = logic.searchDictionary(valueTableDictionary, {
+  query: "흙",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+});
+assert.strictEqual(noResultSearch.total, 0);
+assert.deepStrictEqual(noResultSearch.results, []);
+
+const malformedApiPayload = logic.normalizeSearchPayload(
+  {
+    total: "2",
+    page: "1",
+    pageSize: "10",
+    queryInfo: null,
+    results: [
+      {
+        word: "가나",
+        reading: "가나"
+      },
+      null,
+      {
+        key: "값표",
+        followerCount: "3",
+        allowedAfter: null
+      }
+    ]
+  },
+  {
+    query: "가",
+    sourceMode: "starts",
+    page: 1,
+    pageSize: 10
+  }
+);
+assert.strictEqual(malformedApiPayload.total, 2);
+assert.strictEqual(malformedApiPayload.results.length, 2);
+assert.deepStrictEqual(malformedApiPayload.results[0].allowedAfter, ["나"]);
+assert.ok(malformedApiPayload.warnings.includes("result-entry-not-object"));
+
+const nullPayload = logic.normalizeSearchPayload(null, {
+  query: "!!!",
+  sourceMode: "starts",
+  page: 1,
+  pageSize: 10
+});
+assert.strictEqual(nullPayload.total, 0);
+assert.deepStrictEqual(nullPayload.results, []);
+assert.ok(nullPayload.warnings.includes("payload-not-object"));
+
+assert.match(
+  logic.getSearchErrorMessage({ name: "TimeoutError", message: "online fetch timeout" }),
+  /지연/
+);
+assert.match(
+  logic.getSearchErrorMessage(new Error("failed to fetch")),
+  /검색 데이터를 불러오지 못했습니다/
+);
+
 console.log("logic tests passed");
