@@ -668,9 +668,6 @@ async function searchDictionary(options, context) {
 }
 
 function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page) {
-  const usedKeys = Array.isArray(options.usedKeys)
-    ? options.usedKeys.map(normalizeKey).filter(Boolean).sort().join(",")
-    : "";
   return [
     runtimeVersion,
     normalizeKey(options.query || ""),
@@ -678,8 +675,7 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     sourceMode,
     options.oneShotOnly ? "1" : "0",
     String(Math.max(1, Math.floor(Number(page)) || 1)),
-    String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT)),
-    usedKeys
+    String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT))
   ].join("|");
 }
 
@@ -756,12 +752,6 @@ function warnWorker(message, details) {
 
 function createSearchOptions(options) {
   const usedKeySet = new Set();
-  for (const rawKey of options.usedKeys || []) {
-    const key = normalizeKey(rawKey);
-    if (key) {
-      usedKeySet.add(key);
-    }
-  }
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     usedKeySet,

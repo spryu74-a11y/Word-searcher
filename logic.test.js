@@ -526,8 +526,32 @@ const breadAfterUsed = logic.searchDictionary(usedWordBlunderDictionary, {
   usedKeys: ["값표"]
 });
 const usedWordBlunder = breadAfterUsed.results.find((entry) => entry.word === "빵빵");
-assert.ok(usedWordBlunder.blunder);
-assert.deepStrictEqual(usedWordBlunder.oneShotReplyWords, ["빵값"]);
+assert.ok(usedWordBlunder);
+assert.ok(!usedWordBlunder.blunder);
+assert.deepStrictEqual(
+  breadAfterUsed.results.map((entry) => entry.word),
+  breadBeforeUsed.results.map((entry) => entry.word)
+);
+
+const usedDisplayBefore = logic.applyUsedStateToResults(breadBeforeUsed.results, []);
+assert.strictEqual(usedDisplayBefore.find((entry) => entry.word === "빵빵").isUsed, false);
+const usedDisplayAfterToggle = logic.applyUsedStateToResults(breadAfterUsed.results, [
+  logic.normalizeWordId("빵빵")
+]);
+assert.strictEqual(usedDisplayAfterToggle.find((entry) => entry.word === "빵빵").isUsed, true);
+assert.ok(usedDisplayAfterToggle.some((entry) => entry.word === "빵빵"));
+const usedDisplayAfterReload = logic.applyUsedStateToResults(
+  logic.searchDictionary(usedWordBlunderDictionary, {
+    query: "빵",
+    sourceMode: "starts",
+    oneShotOnly: false,
+    pageSize: 10
+  }).results,
+  new Set([logic.normalizeWordId("빵빵")])
+);
+assert.strictEqual(usedDisplayAfterReload.find((entry) => entry.word === "빵빵").isUsed, true);
+const usedDisplayAfterUntoggle = logic.applyUsedStateToResults(breadAfterUsed.results, []);
+assert.strictEqual(usedDisplayAfterUntoggle.find((entry) => entry.word === "빵빵").isUsed, false);
 
 const valueTableDictionary = logic.createDictionary(["값표", "표준값"].join("\n"));
 const valueTable = logic.searchDictionary(valueTableDictionary, {

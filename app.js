@@ -401,6 +401,10 @@
     return normalizeNfc(value).trim().replace(/\s+/g, "");
   }
 
+  function normalizeWordId(value) {
+    return normalizeNfc(value).trim().replace(/\s+/g, "").toLowerCase();
+  }
+
   function validateSearchQuery(value, options) {
     const maxLength = Math.max(
       1,
@@ -1158,6 +1162,25 @@
     return result;
   }
 
+  function applyUsedStateToResults(results, usedWordIds) {
+    const usedSet = new Set(
+      Array.from(usedWordIds || [])
+        .map(normalizeWordId)
+        .filter(Boolean)
+    );
+    return (Array.isArray(results) ? results : []).map((entry) => {
+      const id = getEntryWordId(entry);
+      return {
+        ...entry,
+        isUsed: Boolean(id && usedSet.has(id))
+      };
+    });
+  }
+
+  function getEntryWordId(entry) {
+    return normalizeWordId(entry && (entry.key || entry.word || entry.reading));
+  }
+
   function toPositiveInteger(value, fallback) {
     const number = Math.floor(Number(value));
     return Number.isFinite(number) && number > 0 ? number : Math.max(1, Math.floor(Number(fallback)) || 1);
@@ -1719,15 +1742,14 @@
     const exactReading = queryInfo.reading;
     const oneShotOnly = Boolean(options.oneShotOnly);
     const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
-    const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
     const searchOptions = {
       oneShotOnly,
       pageSize,
       page,
       exactWord,
       exactReading,
-      usedKeySet,
-      usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
+      usedKeySet: new Set(),
+      usedStartCounts: new Map()
     };
     const collected =
       sourceMode === "reply"
@@ -1808,6 +1830,7 @@
     __factory: createCore,
     FALLBACK_DICTIONARY,
     MAX_SEARCH_QUERY_LENGTH,
+    applyUsedStateToResults,
     cleanHangul,
     createDictionary,
     englishToHangul,
@@ -1820,6 +1843,7 @@
     isCombinedHangulLetterName,
     normalizeSearchPayload,
     normalizeSearchQuery,
+    normalizeWordId,
     searchDictionary,
     selectOnlineWords,
     toReading,
@@ -2013,7 +2037,7 @@ function initApp(core) {
     },
     showUsedControls: true,
     sourceMode: "starts",
-    usedWordKeys: loadUsedWordKeys(),
+    usedWordIds: loadUsedWordIds(),
     worker: createSearchWorker(core, {
       textUrl: defaultDictionaryTextUrl,
       metaUrl: defaultDictionaryMetaUrl,
@@ -2394,9 +2418,9 @@ function initApp(core) {
   }
   if (elements.resetUsedWords) {
     addSearchEventListener(elements.resetUsedWords, "click", () => {
-      state.usedWordKeys.clear();
-      saveUsedWordKeys();
-      scheduleSearch(0, true);
+      state.usedWordIds.clear();
+      saveUsedWordIds();
+      renderUsedStateForCurrentResults();
     });
   }
   addSearchEventListener(elements.resultPager, "click", (event) => {
@@ -2450,7 +2474,7 @@ function initApp(core) {
     state.onlineOneShotPreloadId += 1;
     state.onlineOneShotPreloadStarted = false;
     state.opendictProxyUnavailable = false;
-    state.usedWordKeys.clear();
+    state.usedWordIds.clear();
     abortOnlineLookup();
     window.clearTimeout(state.onlinePrefixSaveTimer);
     [
@@ -2776,7 +2800,6 @@ function initApp(core) {
         query,
         sourceMode: state.sourceMode,
         oneShotOnly: elements.oneShotOnly.checked,
-        usedKeys: Array.from(state.usedWordKeys),
         page: state.page,
         pageSize: getPageSize()
       }
@@ -2999,8 +3022,7 @@ function initApp(core) {
       state.sourceMode,
       elements.oneShotOnly.checked ? "1" : "0",
       String(state.page),
-      String(getPageSize()),
-      Array.from(state.usedWordKeys).sort().join(",")
+      String(getPageSize())
     ].join("|");
   }
 
@@ -3379,11 +3401,11 @@ function initApp(core) {
     }
   }
 
-  function normalizeUsedWordKey(value) {
-    return String(value || "").trim().toLowerCase();
+  function normalizeUsedWordId(value) {
+    return core.normalizeWordId(value);
   }
 
-  function loadUsedWordKeys() {
+  function loadUsedWordIds() {
     try {
       const raw = readLocalStorage(USED_WORDS_STORAGE_KEY, "");
       if (!raw) {
@@ -3393,14 +3415,14 @@ function initApp(core) {
       if (!Array.isArray(parsed)) {
         return new Set();
       }
-      return new Set(parsed.map(normalizeUsedWordKey).filter(Boolean));
+      return new Set(parsed.map(normalizeUsedWordId).filter(Boolean));
     } catch {
       return new Set();
     }
   }
 
-  function saveUsedWordKeys() {
-    writeLocalStorage(USED_WORDS_STORAGE_KEY, JSON.stringify(Array.from(state.usedWordKeys)));
+  function saveUsedWordIds() {
+    writeLocalStorage(USED_WORDS_STORAGE_KEY, JSON.stringify(Array.from(state.usedWordIds)));
   }
 
   function loadBooleanSetting(key, fallback) {
@@ -3419,17 +3441,33 @@ function initApp(core) {
   }
 
   function setUsedWord(entry, isUsed) {
-    const key = normalizeUsedWordKey(entry && entry.key);
-    if (!key) {
+    const id = getUsedWordId(entry);
+    if (!id) {
       return false;
     }
     if (isUsed) {
-      state.usedWordKeys.add(key);
+      state.usedWordIds.add(id);
     } else {
-      state.usedWordKeys.delete(key);
+      state.usedWordIds.delete(id);
     }
-    saveUsedWordKeys();
-    return state.usedWordKeys.has(key);
+    saveUsedWordIds();
+    return state.usedWordIds.has(id);
+  }
+
+  function getUsedWordId(entry) {
+    return core.normalizeWordId(entry && (entry.key || entry.word || entry.reading));
+  }
+
+  function renderUsedStateForCurrentResults() {
+    elements.resultList.querySelectorAll(".result-message").forEach((row) => {
+      const id = row.dataset.wordId || "";
+      const isUsed = Boolean(id && state.usedWordIds.has(id));
+      row.classList.toggle("used-word", isUsed);
+      const input = row.querySelector(".used-word-check input");
+      if (input) {
+        input.checked = isUsed;
+      }
+    });
   }
 
   function normalizeOpendictApiKey(value) {
@@ -5039,7 +5077,7 @@ function initApp(core) {
     }
 
     const fragment = document.createDocumentFragment();
-    for (const entry of payload.results) {
+    for (const entry of core.applyUsedStateToResults(payload.results, state.usedWordIds)) {
       fragment.appendChild(createResultNode(entry));
     }
     elements.resultList.appendChild(fragment);
@@ -5168,7 +5206,8 @@ function initApp(core) {
   function createResultNode(entry) {
     const row = document.createElement("article");
     row.className = "result-message";
-    row.classList.toggle("used-word", state.usedWordKeys.has(normalizeUsedWordKey(entry.key)));
+    row.dataset.wordId = getUsedWordId(entry);
+    row.classList.toggle("used-word", Boolean(entry.isUsed));
 
     const avatar = document.createElement("div");
     const avatarType = entry.oneShot
@@ -5262,13 +5301,12 @@ function initApp(core) {
 
     const input = document.createElement("input");
     input.type = "checkbox";
-    input.checked = state.usedWordKeys.has(normalizeUsedWordKey(entry.key));
+    input.checked = Boolean(entry.isUsed);
     input.setAttribute("aria-label", `${entry.word} 사용됨`);
     input.addEventListener("change", () => {
       const isUsed = setUsedWord(entry, input.checked);
       input.checked = isUsed;
       row.classList.toggle("used-word", isUsed);
-      scheduleSearch(0);
     });
 
     const text = document.createElement("span");
