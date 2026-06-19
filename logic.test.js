@@ -529,4 +529,25 @@ const usedWordBlunder = breadAfterUsed.results.find((entry) => entry.word === "�
 assert.ok(usedWordBlunder.blunder);
 assert.deepStrictEqual(usedWordBlunder.oneShotReplyWords, ["빵값"]);
 
+const valueTableDictionary = logic.createDictionary(["값표", "표준값"].join("\n"));
+const valueTable = logic.searchDictionary(valueTableDictionary, {
+  query: "값",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+});
+const valueTableEntry = valueTable.results.find((entry) => entry.word === "값표");
+assert.ok(valueTableEntry);
+assert.ok(!valueTableEntry.blunder);
+
+const standardValue = logic.searchDictionary(valueTableDictionary, {
+  query: "표",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+});
+const standardValueEntry = standardValue.results.find((entry) => entry.word === "표준값");
+assert.ok(standardValueEntry);
+assert.ok(!standardValueEntry.alternativeOneShot);
+
 console.log("logic tests passed");

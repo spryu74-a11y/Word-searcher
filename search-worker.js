@@ -1,9 +1,9 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=modern-search-index-shards-20260618";
-const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260618-kits";
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=modern-search-index-shards-20260619-input-loading-fixes";
+const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260619-input-loading-fixes";
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "modern-search-index-shards-20260618";
+const SHARD_VERSION = "modern-search-index-shards-20260619-input-loading-fixes";
 const DEFAULT_LIMIT = 260;
 const ENTRY_WORD = 0;
 const ENTRY_READING = 1;

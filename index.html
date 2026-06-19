@@ -141,7 +141,15 @@
         </footer>
 
         <nav class="result-pager" id="resultPager" aria-label="검색 결과 페이지" hidden></nav>
-        <section class="message-list" id="resultList" aria-live="polite"></section>
+        <section class="message-list" id="resultList" aria-live="polite" aria-busy="true">
+          <div class="empty-message loading-message" role="status">
+            <div class="word-avatar loading-avatar">#</div>
+            <div class="message-body">
+              <span class="loading-spinner" aria-hidden="true"></span>
+              <span>단어팩을 불러오는 중입니다</span>
+            </div>
+          </div>
+        </section>
         <button class="back-to-top" id="backToTop" type="button" aria-label="맨 위로">
           <span>맨 위로</span>
         </button>
@@ -227,6 +235,6 @@
       <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener">CC BY-SA 2.0</a>
     </footer>
 
-    <script src="./app.js?v=modern-search-custom-parse-20260619-search-stability"></script>
+    <script src="./app.js?v=modern-search-custom-parse-20260619-input-loading-fixes"></script>
   </body>
 </html>

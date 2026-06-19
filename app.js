@@ -1611,6 +1611,23 @@ function initApp(core) {
   const SEARCH_RESULT_CACHE_MAX = 128;
   const SEARCH_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
   const SEARCH_METRICS_LOG_INTERVAL_MS = 15000;
+  const SEARCH_KEYUP_IGNORE_KEYS = new Set([
+    "Enter",
+    "Escape",
+    "Shift",
+    "Control",
+    "Alt",
+    "Meta",
+    "Tab",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown"
+  ]);
   const REQUIRED_SUPPLEMENT_WORDS = [];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
@@ -1704,6 +1721,7 @@ function initApp(core) {
     lastRenderedSearchSignature: "",
     lastSubmittedSearchSignature: "",
     pendingSearch: false,
+    appLoading: true,
     observedQuery: "",
     searchMetrics: {
       inputEvents: 0,
@@ -1758,6 +1776,7 @@ function initApp(core) {
           `KO ${formatNumber(message.defaultMeta.korean)} / EN ${formatNumber(message.defaultMeta.english)} / 추가 ${formatNumber(message.defaultMeta.extra)}`;
       }
       updateStats(message.stats);
+      setLoadingState(false, "단어팩 준비됨");
       setBusy(false, "단어팩 준비됨");
       if (state.pendingSearch || String(elements.queryInput.value || "").trim()) {
         scheduleSearch(0);
@@ -1776,6 +1795,7 @@ function initApp(core) {
       const currentQuery = String(elements.queryInput.value || "").trim();
       if (!currentQuery) {
         state.pendingSearch = false;
+        state.lastRenderedSearchSignature = "";
         renderStartScreen();
         return;
       }
@@ -1835,6 +1855,7 @@ function initApp(core) {
       state.searchInFlight = false;
       state.searchAbortController = null;
       state.searchMetrics.failed += 1;
+      setLoadingState(false, "오류");
       setBusy(false, "오류");
       renderEmpty(message.message || "처리 중 오류가 났습니다");
     }
@@ -1850,6 +1871,7 @@ function initApp(core) {
     state.searchMetrics.failed += 1;
     clearSearchWatchdog();
     state.pendingSearch = false;
+    setLoadingState(false, "검색 오류");
     setBusy(false, "검색 오류");
     const message = event && event.message ? event.message : "검색 엔진을 시작하지 못했습니다";
     renderEmpty(message);
@@ -1865,6 +1887,7 @@ function initApp(core) {
     state.searchMetrics.failed += 1;
     clearSearchWatchdog();
     state.pendingSearch = false;
+    setLoadingState(false, "검색 오류");
     setBusy(false, "검색 오류");
     renderEmpty("검색 결과를 읽지 못했습니다");
   }
@@ -1889,10 +1912,18 @@ function initApp(core) {
     clearSearchWatchdog();
     state.pendingSearch = true;
     state.page = 1;
-    setBusy(true, "검색 엔진 복구중");
-    renderEmpty("검색 엔진을 다시 시작하고 있습니다");
+    setLoadingState(true, "검색 엔진 복구중");
+    renderLoadingScreen("검색 엔진을 다시 시작하고 있습니다");
     rebuildDictionary();
     return true;
+  }
+
+  function requestInputSearch(delay, countInputEvent) {
+    if (countInputEvent) {
+      state.searchMetrics.inputEvents += 1;
+    }
+    state.observedQuery = elements.queryInput.value;
+    scheduleSearch(delay, true);
   }
 
   function addSearchEventListener(target, type, handler, options) {
@@ -1927,25 +1958,22 @@ function initApp(core) {
   elements.closeDictionary.addEventListener("click", () => setDictionaryPanelOpen(false));
   elements.panelBackdrop.addEventListener("click", () => setDictionaryPanelOpen(false));
   addSearchEventListener(elements.searchButton, "click", () => {
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(0, true);
+    requestInputSearch(0, false);
   });
   addSearchEventListener(elements.queryInput, "compositionstart", () => {
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(SEARCH_DEBOUNCE_MS, true);
+    requestInputSearch(SEARCH_DEBOUNCE_MS, false);
   });
   addSearchEventListener(elements.queryInput, "compositionend", () => {
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(0, true);
+    requestInputSearch(0, true);
   });
   addSearchEventListener(elements.queryInput, "blur", () => {
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(0, true);
+    requestInputSearch(0, false);
   });
   addSearchEventListener(elements.queryInput, "input", () => {
-    state.searchMetrics.inputEvents += 1;
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(SEARCH_DEBOUNCE_MS, true);
+    requestInputSearch(SEARCH_DEBOUNCE_MS, true);
+  });
+  addSearchEventListener(elements.queryInput, "search", () => {
+    requestInputSearch(0, true);
   });
   addSearchEventListener(elements.queryInput, "keydown", (event) => {
     if (event.key !== "Enter") {
@@ -1953,10 +1981,30 @@ function initApp(core) {
     }
 
     event.preventDefault();
-    state.observedQuery = elements.queryInput.value;
-    scheduleSearch(0, true);
+    requestInputSearch(0, false);
     if (mobileMedia.matches) {
       elements.queryInput.blur();
+    }
+  });
+  addSearchEventListener(elements.queryInput, "keyup", (event) => {
+    if (
+      SEARCH_KEYUP_IGNORE_KEYS.has(event.key) ||
+      event.isComposing ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    const currentValue = elements.queryInput.value;
+    const currentQuery = String(currentValue || "").trim();
+    const currentSignature = currentQuery ? getSearchSignature(currentQuery) : "";
+    if (
+      currentValue !== state.observedQuery ||
+      (currentSignature && currentSignature !== state.lastRenderedSearchSignature && !state.pendingSearch)
+    ) {
+      requestInputSearch(SEARCH_DEBOUNCE_MS, false);
     }
   });
   addSearchEventListener(elements.oneShotOnly, "change", () => {
@@ -2064,7 +2112,8 @@ function initApp(core) {
     reader.readAsText(file, "utf-8");
   });
 
-  renderEmpty("단어팩을 준비하고 있습니다");
+  setLoadingState(true, "단어팩 로딩중");
+  renderLoadingScreen("단어팩을 불러오는 중입니다");
   rebuildDictionary();
   startSearchMetricsLogger();
   window.setInterval(() => {
@@ -2093,7 +2142,8 @@ function initApp(core) {
     state.searchRequestId = 0;
     state.searchSignature = "";
     state.pendingSearch = true;
-    setBusy(true, "단어팩 준비중");
+    setLoadingState(true, "단어팩 준비중");
+    renderLoadingScreen("단어팩을 불러오는 중입니다");
     state.worker.postMessage({
       type: "buildDefault",
       id: ++state.requestId,
@@ -2226,7 +2276,11 @@ function initApp(core) {
       cancelActiveSearch("superseded");
     }
     if (query && query.length >= SEARCH_MIN_QUERY_LENGTH) {
-      renderPendingSearch(query);
+      if (state.appLoading && !state.workerReady) {
+        renderLoadingScreen("단어팩을 불러오는 중입니다");
+      } else {
+        renderPendingSearch(query);
+      }
     } else if (state.workerReady) {
       cancelActiveSearch("empty-query");
       renderStartScreen();
@@ -2243,6 +2297,7 @@ function initApp(core) {
       state.searchRequestId = 0;
       state.searchSignature = "";
       state.lastSubmittedSearchSignature = "";
+      state.lastRenderedSearchSignature = "";
       state.searchAbortController = null;
       clearSearchWatchdog();
       renderStartScreen();
@@ -2250,6 +2305,9 @@ function initApp(core) {
     }
     if (!state.workerReady) {
       state.pendingSearch = true;
+      if (state.appLoading) {
+        renderLoadingScreen("단어팩을 불러오는 중입니다");
+      }
       return;
     }
     const signature = getSearchSignature(query);
@@ -2374,7 +2432,8 @@ function initApp(core) {
     state.pendingSearch = true;
     clearSearchResultCache();
     state.searchMetrics.workerRestarts += 1;
-    setBusy(true, "검색 엔진 재시작 중");
+    setLoadingState(true, "검색 엔진 재시작 중");
+    renderLoadingScreen("검색 엔진을 다시 시작하고 있습니다");
     logSearchTrace("worker-restart", {
       reason: reason || "canceled",
       activeMs: Math.round(activeMs || 0)
@@ -4489,6 +4548,33 @@ function initApp(core) {
     elements.resultList.appendChild(row);
   }
 
+  function renderLoadingScreen(text) {
+    state.page = 1;
+    elements.readingPreview.textContent = "-";
+    elements.allowedPreview.textContent = "-";
+    elements.resultMeta.textContent = "로딩중";
+    elements.resultPager.hidden = true;
+    updateBackToTop();
+    elements.resultList.textContent = "";
+
+    const row = document.createElement("div");
+    row.className = "empty-message loading-message";
+    row.setAttribute("role", "status");
+    const avatar = document.createElement("div");
+    avatar.className = "word-avatar loading-avatar";
+    avatar.textContent = "#";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    const spinner = document.createElement("span");
+    spinner.className = "loading-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = text || "로딩중입니다";
+    body.append(spinner, label);
+    row.append(avatar, body);
+    elements.resultList.appendChild(row);
+  }
+
   function renderPendingSearch(query) {
     const queryInfo = core.getQueryInfo(query, state.sourceMode);
     elements.readingPreview.textContent = queryInfo.reading || "-";
@@ -4857,9 +4943,31 @@ function initApp(core) {
   }
 
   function setBusy(isBusy, label) {
-    elements.buildState.textContent = label;
-    elements.searchButton.disabled = isBusy;
-    elements.applyDictionary.disabled = isBusy;
+    if (label) {
+      elements.buildState.textContent = label;
+    }
+    const disabled = Boolean(isBusy || state.appLoading);
+    elements.searchButton.disabled = disabled;
+    elements.applyDictionary.disabled = disabled;
+  }
+
+  function setLoadingState(isLoading, label) {
+    state.appLoading = Boolean(isLoading);
+    document.body.classList.toggle("app-loading", state.appLoading);
+    elements.resultList.setAttribute("aria-busy", state.appLoading ? "true" : "false");
+    elements.queryInput.disabled = state.appLoading;
+    elements.queryInput.setAttribute("aria-disabled", state.appLoading ? "true" : "false");
+    elements.oneShotOnly.disabled = state.appLoading;
+    if (elements.settingsOneShotOnly) {
+      elements.settingsOneShotOnly.disabled = state.appLoading;
+    }
+    if (label) {
+      elements.buildState.textContent = label;
+    }
+    if (state.appLoading) {
+      elements.searchButton.disabled = true;
+      elements.applyDictionary.disabled = true;
+    }
   }
 }
 
@@ -4869,7 +4977,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=modern-search-custom-parse-20260619-search-stability", window.location.href)
+      new URL("./search-worker.js?v=modern-search-custom-parse-20260619-input-loading-fixes", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
