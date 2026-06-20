@@ -1,0 +1,47 @@
+"""Validate the immutable v2 search index after rebuilding it."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+INDEX = ROOT / "data" / "search-index.json"
+
+
+def main() -> None:
+    payload = json.loads(INDEX.read_text(encoding="utf-8"))
+    assert payload.get("version") == 2, "run tools/build_search_index.py first"
+    entries = payload.get("entries") or []
+    by_first = payload.get("byFirstChar") or {}
+    by_last = payload.get("byLastChar") or {}
+    assert len(entries) == int((payload.get("stats") or {}).get("total") or 0)
+
+    first_seen: set[int] = set()
+    for start, indices in by_first.items():
+        previous = ""
+        for index in indices:
+            entry = entries[index]
+            assert entry[7] == start
+            assert entry[1] >= previous, f"first-char bucket {start} is not reading-sorted"
+            previous = entry[1]
+            first_seen.add(index)
+
+    last_seen: set[int] = set()
+    for end, indices in by_last.items():
+        for index in indices:
+            entry = entries[index]
+            assert entry[8] == end
+            assert isinstance(entry[9], list) and entry[9]
+            assert entry[10] == str(entry[0]).lower()
+            last_seen.add(index)
+
+    expected = set(range(len(entries)))
+    assert first_seen == expected, "byFirstChar must cover every entry exactly once"
+    assert last_seen == expected, "byLastChar must cover every entry exactly once"
+    print(f"search index v2 validated: entries={len(entries):,} first={len(by_first):,} last={len(by_last):,}")
+
+
+if __name__ == "__main__":
+    main()

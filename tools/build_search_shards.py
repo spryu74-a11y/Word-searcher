@@ -19,14 +19,14 @@ def shard_name(start: str) -> str:
 def build_shards() -> None:
     payload = json.loads(SOURCE.read_text(encoding="utf-8"))
     entries = payload.get("entries") or []
-    buckets = payload.get("buckets") or {}
+    by_first_char = payload.get("byFirstChar") or payload.get("buckets") or {}
 
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     manifest_shards: dict[str, dict[str, object]] = {}
-    for start, indices in sorted(buckets.items()):
+    for start, indices in sorted(by_first_char.items()):
         file_name = shard_name(start)
         shard_entries = []
         for index in indices:
@@ -34,7 +34,7 @@ def build_shards() -> None:
             shard_entries.append([index, *entry])
 
         shard_payload = {
-            "version": 1,
+            "version": 2,
             "start": start,
             "entries": shard_entries,
         }
@@ -49,7 +49,7 @@ def build_shards() -> None:
         }
 
     manifest = {
-        "version": 1,
+        "version": 2,
         "meta": payload.get("meta") or {},
         "stats": payload.get("stats") or {},
         "total": len(entries),

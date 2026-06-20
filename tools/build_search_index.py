@@ -235,10 +235,15 @@ def build_index() -> None:
     stats = classify_entries(entries, invalid)
     stats["buildMs"] = round((time.perf_counter() - started) * 1000)
 
-    buckets: dict[str, list[int]] = {}
+    # These are immutable, load-time indexes.  The browser worker consumes
+    # byFirstChar for normal and reply searches and keeps byLastChar available
+    # for chain analysis without ever scanning the dictionary.
+    by_first_char: dict[str, list[int]] = {}
+    by_last_char: dict[str, list[int]] = {}
     packed_entries: list[list[object]] = []
     for index, entry in enumerate(entries):
-        buckets.setdefault(entry["start"], []).append(index)  # type: ignore[arg-type]
+        by_first_char.setdefault(entry["start"], []).append(index)  # type: ignore[arg-type]
+        by_last_char.setdefault(entry["end"], []).append(index)  # type: ignore[arg-type]
         category = 0
         if entry["oneShot"]:
             category = 1
@@ -255,16 +260,29 @@ def build_index() -> None:
                 entry["oneShotReplyCount"],
                 entry["alternativeOneShotReplyCount"],
                 category,
+                entry["start"],
+                entry["end"],
+                entry["allowed"],
+                entry["key"],
             ]
         )
 
+    # A two-or-more syllable query can binary-search this order rather than
+    # filtering every word in the first-syllable bucket.
+    for indices in by_first_char.values():
+        indices.sort(key=lambda index: (str(entries[index]["reading"]), str(entries[index]["word"])))
+
     meta = json.loads(DICTIONARY_META.read_text(encoding="utf-8")) if DICTIONARY_META.exists() else {}
     payload = {
-        "version": 1,
+        "version": 2,
         "meta": meta,
         "stats": stats,
         "entries": packed_entries,
-        "buckets": buckets,
+        "byFirstChar": by_first_char,
+        "byLastChar": by_last_char,
+        # Kept temporarily so an older shard builder can still read a newly
+        # generated full index.  Runtime code reads byFirstChar first.
+        "buckets": by_first_char,
     }
     OUTPUT.write_text(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),

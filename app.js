@@ -1256,9 +1256,7 @@
     const categoryOrdered = oneShotOnly
       ? oneShots.concat(alternatives, safeConnections, blunders)
       : safeConnections.concat(alternatives, oneShots, blunders);
-    const ordered = oneShotOnly
-      ? pinExactMatches(categoryOrdered, exactWord, exactReading)
-      : categoryOrdered;
+    const ordered = pinExactMatches(categoryOrdered, exactWord, exactReading);
     const requestedSize = Math.floor(Number(pageSize)) || DEFAULT_LIMIT;
     const requestedPage = Math.floor(Number(page)) || 1;
     const size = Math.max(1, requestedSize);
@@ -1742,14 +1740,15 @@
     const exactReading = queryInfo.reading;
     const oneShotOnly = Boolean(options.oneShotOnly);
     const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
+    const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
     const searchOptions = {
       oneShotOnly,
       pageSize,
       page,
       exactWord,
       exactReading,
-      usedKeySet: new Set(),
-      usedStartCounts: new Map()
+      usedKeySet,
+      usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
     };
     const collected =
       sourceMode === "reply"
@@ -1899,16 +1898,19 @@ function initApp(core) {
   const RESULT_PAGE_SIZE = 50;
   const TABLET_RESULT_PAGE_SIZE = 40;
   const MOBILE_RESULT_PAGE_SIZE = 25;
-  const ONE_SHOT_RESULT_PAGE_SIZE = 120;
+  const ONE_SHOT_RESULT_PAGE_SIZE = 100;
   const SEARCH_SLOW_NOTICE_MS = 8000;
   const SEARCH_TIMEOUT_MS = 20000;
   const SEARCH_WORKER_RESTART_AFTER_MS = 1200;
-  const SEARCH_DEBOUNCE_MS = 300;
+  const SEARCH_DEBOUNCE_MS = 0;
   const SEARCH_MIN_QUERY_LENGTH = 1;
   const SEARCH_MAX_QUERY_LENGTH = core.MAX_SEARCH_QUERY_LENGTH || 80;
-  const SEARCH_RESULT_CACHE_MAX = 128;
-  const SEARCH_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
+  const SEARCH_RESULT_CACHE_MAX = 500;
+  const SEARCH_RESULT_CACHE_TTL_MS = 10 * 60 * 1000;
+  const VIRTUAL_RESULT_OVERSCAN = 6;
+  const VIRTUAL_RESULT_ESTIMATED_HEIGHT = 112;
   const SEARCH_METRICS_LOG_INTERVAL_MS = 15000;
+  const SEARCH_DEBUG = false;
   const SEARCH_KEYUP_IGNORE_KEYS = new Set([
     "Enter",
     "Escape",
@@ -2038,6 +2040,8 @@ function initApp(core) {
     showUsedControls: true,
     sourceMode: "starts",
     usedWordIds: loadUsedWordIds(),
+    usedVersion: 0,
+    virtualResults: null,
     worker: createSearchWorker(core, {
       textUrl: defaultDictionaryTextUrl,
       metaUrl: defaultDictionaryMetaUrl,
@@ -2153,11 +2157,13 @@ function initApp(core) {
       const renderMs = Math.round(performance.now() - renderStart);
       const totalMs = Math.round(performance.now() - (state._searchStartTime || 0));
       const t = payload && payload.timing;
-      console.debug(
-        `[검색 타이밍] 총=${totalMs}ms | worker=${payload && payload.elapsedMs}ms` +
-        (t ? ` (shard=${t.shardMs}ms search=${t.searchMs}ms follower=${t.followerMs || 0}ms state=${t.stateMs}ms)` : "") +
-        ` | render=${renderMs}ms | 결과=${payload && payload.total}건`
-      );
+      if (SEARCH_DEBUG) {
+        console.debug(
+          `[검색 타이밍] 총=${totalMs}ms | worker=${payload && payload.elapsedMs}ms` +
+          (t ? ` (shard=${t.shardMs}ms search=${t.searchMs}ms follower=${t.followerMs || 0}ms state=${t.stateMs}ms)` : "") +
+          ` | render=${renderMs}ms | 결과=${payload && payload.total}건`
+        );
+      }
       return;
     }
 
@@ -2418,8 +2424,14 @@ function initApp(core) {
   }
   if (elements.resetUsedWords) {
     addSearchEventListener(elements.resetUsedWords, "click", () => {
+      const hadUsedWords = state.usedWordIds.size > 0;
       state.usedWordIds.clear();
       saveUsedWordIds();
+      if (hadUsedWords) {
+        state.usedVersion += 1;
+        clearSearchResultCache();
+        scheduleSearch(0);
+      }
       renderUsedStateForCurrentResults();
     });
   }
@@ -2432,10 +2444,12 @@ function initApp(core) {
   });
   let _scrollThrottleTimer = null;
   addSearchEventListener(elements.resultList, "scroll", () => {
+    renderVirtualResultWindow(false);
     if (_scrollThrottleTimer) return;
     _scrollThrottleTimer = setTimeout(() => {
       _scrollThrottleTimer = null;
       updateBackToTop();
+      renderVirtualResultWindow(false);
     }, 100);
   });
   addSearchEventListener(elements.backToTop, "click", () => {
@@ -2800,6 +2814,8 @@ function initApp(core) {
         query,
         sourceMode: state.sourceMode,
         oneShotOnly: elements.oneShotOnly.checked,
+        usedKeys: Array.from(state.usedWordIds),
+        usedVersion: state.usedVersion,
         page: state.page,
         pageSize: getPageSize()
       }
@@ -2959,6 +2975,9 @@ function initApp(core) {
   }
 
   function logSearchTrace(phase, details) {
+    if (!SEARCH_DEBUG) {
+      return;
+    }
     const payload = {
       phase,
       ...(details || {}),
@@ -3021,6 +3040,7 @@ function initApp(core) {
       core.toReading(query),
       state.sourceMode,
       elements.oneShotOnly.checked ? "1" : "0",
+      String(state.usedVersion),
       String(state.page),
       String(getPageSize())
     ].join("|");
@@ -3445,13 +3465,19 @@ function initApp(core) {
     if (!id) {
       return false;
     }
+    const wasUsed = state.usedWordIds.has(id);
     if (isUsed) {
       state.usedWordIds.add(id);
     } else {
       state.usedWordIds.delete(id);
     }
     saveUsedWordIds();
-    return state.usedWordIds.has(id);
+    const nextUsed = state.usedWordIds.has(id);
+    if (nextUsed !== wasUsed) {
+      state.usedVersion += 1;
+      clearSearchResultCache();
+    }
+    return nextUsed;
   }
 
   function getUsedWordId(entry) {
@@ -4960,6 +4986,7 @@ function initApp(core) {
   }
 
   function renderStartScreen() {
+    clearVirtualResults();
     state.page = 1;
     elements.readingPreview.textContent = "-";
     elements.allowedPreview.textContent = "-";
@@ -5003,6 +5030,7 @@ function initApp(core) {
   }
 
   function renderLoadingScreen(text) {
+    clearVirtualResults();
     state.page = 1;
     elements.readingPreview.textContent = "-";
     elements.allowedPreview.textContent = "-";
@@ -5030,6 +5058,7 @@ function initApp(core) {
   }
 
   function renderPendingSearch(query) {
+    clearVirtualResults();
     const queryInfo = core.getQueryInfo(query, state.sourceMode);
     elements.readingPreview.textContent = queryInfo.reading || "-";
     elements.allowedPreview.textContent =
@@ -5054,6 +5083,7 @@ function initApp(core) {
   }
 
   function renderSearch(payload) {
+    clearVirtualResults();
     state.page = Number(payload.page || 1);
     elements.readingPreview.textContent = payload.queryInfo.reading || "-";
     elements.allowedPreview.textContent =
@@ -5076,12 +5106,96 @@ function initApp(core) {
       return;
     }
 
-    const fragment = document.createDocumentFragment();
-    for (const entry of core.applyUsedStateToResults(payload.results, state.usedWordIds)) {
-      fragment.appendChild(createResultNode(entry));
-    }
-    elements.resultList.appendChild(fragment);
+    renderVirtualResults(core.applyUsedStateToResults(payload.results, state.usedWordIds));
     maybeRunOnlineLookup(payload);
+  }
+
+  function clearVirtualResults() {
+    state.virtualResults = null;
+  }
+
+  function renderVirtualResults(entries) {
+    const results = Array.isArray(entries) ? entries : [];
+    const virtual = {
+      entries: results,
+      heights: new Array(results.length).fill(VIRTUAL_RESULT_ESTIMATED_HEIGHT),
+      start: -1,
+      end: -1,
+      spacer: document.createElement("div"),
+      window: document.createElement("div")
+    };
+    virtual.spacer.className = "result-virtual-spacer";
+    virtual.window.className = "result-virtual-window";
+    virtual.spacer.appendChild(virtual.window);
+    state.virtualResults = virtual;
+    elements.resultList.appendChild(virtual.spacer);
+    renderVirtualResultWindow(true);
+  }
+
+  function getVirtualOffset(virtual, index) {
+    let offset = 0;
+    for (let current = 0; current < index; current += 1) {
+      offset += virtual.heights[current];
+    }
+    return offset;
+  }
+
+  function renderVirtualResultWindow(force) {
+    const virtual = state.virtualResults;
+    if (!virtual || !virtual.entries.length || !virtual.spacer.isConnected) {
+      return;
+    }
+    const scrollTop = elements.resultList.scrollTop;
+    const viewportBottom = scrollTop + Math.max(elements.resultList.clientHeight, VIRTUAL_RESULT_ESTIMATED_HEIGHT);
+    let start = 0;
+    let offset = 0;
+    while (start < virtual.entries.length && offset + virtual.heights[start] < scrollTop) {
+      offset += virtual.heights[start];
+      start += 1;
+    }
+    start = Math.max(0, start - VIRTUAL_RESULT_OVERSCAN);
+    let end = start;
+    let endOffset = getVirtualOffset(virtual, start);
+    while (end < virtual.entries.length && endOffset < viewportBottom) {
+      endOffset += virtual.heights[end];
+      end += 1;
+    }
+    end = Math.min(virtual.entries.length, end + VIRTUAL_RESULT_OVERSCAN);
+    const totalHeight = getVirtualOffset(virtual, virtual.entries.length);
+    virtual.spacer.style.height = `${totalHeight}px`;
+    if (!force && virtual.start === start && virtual.end === end) {
+      return;
+    }
+    virtual.start = start;
+    virtual.end = end;
+    virtual.window.textContent = "";
+    virtual.window.style.transform = `translateY(${getVirtualOffset(virtual, start)}px)`;
+    const fragment = document.createDocumentFragment();
+    for (let index = start; index < end; index += 1) {
+      const row = createResultNode(virtual.entries[index]);
+      row.dataset.virtualIndex = String(index);
+      fragment.appendChild(row);
+    }
+    virtual.window.appendChild(fragment);
+    requestAnimationFrame(() => measureVirtualResultRows(virtual));
+  }
+
+  function measureVirtualResultRows(virtual) {
+    if (state.virtualResults !== virtual || !virtual.window.isConnected) {
+      return;
+    }
+    let changed = false;
+    virtual.window.querySelectorAll("[data-virtual-index]").forEach((row) => {
+      const index = Number(row.dataset.virtualIndex);
+      const height = Math.ceil(row.getBoundingClientRect().height);
+      if (Number.isFinite(index) && height > 0 && Math.abs(virtual.heights[index] - height) > 1) {
+        virtual.heights[index] = height;
+        changed = true;
+      }
+    });
+    if (changed) {
+      renderVirtualResultWindow(true);
+    }
   }
 
   function renderPager(payload) {
@@ -5207,6 +5321,7 @@ function initApp(core) {
     const row = document.createElement("article");
     row.className = "result-message";
     row.dataset.wordId = getUsedWordId(entry);
+    row.dataset.resultKey = String(entry.key || entry.word || entry.reading || "");
     row.classList.toggle("used-word", Boolean(entry.isUsed));
 
     const avatar = document.createElement("div");
@@ -5307,6 +5422,7 @@ function initApp(core) {
       const isUsed = setUsedWord(entry, input.checked);
       input.checked = isUsed;
       row.classList.toggle("used-word", isUsed);
+      scheduleSearch(0);
     });
 
     const text = document.createElement("span");
@@ -5375,6 +5491,7 @@ function initApp(core) {
   }
 
   function renderValidationError(validation) {
+    clearVirtualResults();
     state.page = 1;
     elements.readingPreview.textContent = "-";
     elements.allowedPreview.textContent = "-";
@@ -5386,6 +5503,7 @@ function initApp(core) {
   }
 
   function renderError(text, options) {
+    clearVirtualResults();
     renderEmpty("", {
       tone: "error",
       renderBody(body) {
@@ -5411,6 +5529,7 @@ function initApp(core) {
   }
 
   function renderEmpty(text, options) {
+    clearVirtualResults();
     if (!(options && options.keepPager)) {
       elements.resultPager.hidden = true;
     }

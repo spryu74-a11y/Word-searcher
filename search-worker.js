@@ -1,10 +1,10 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=modern-search-index-shards-20260619-input-loading-fixes";
-const INDEX_URL = "./data/search-index.json?v=modern-search-index-20260619-input-loading-fixes";
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620";
+const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620";
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "modern-search-index-shards-20260619-input-loading-fixes";
-const DEFAULT_LIMIT = 260;
+const SHARD_VERSION = "search-index-v2-20260620";
+const DEFAULT_LIMIT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 80;
 const ENTRY_WORD = 0;
 const ENTRY_READING = 1;
@@ -13,18 +13,24 @@ const ENTRY_FOLLOWER_COUNT = 3;
 const ENTRY_ONE_SHOT_REPLY_COUNT = 4;
 const ENTRY_ALTERNATIVE_REPLY_COUNT = 5;
 const ENTRY_CATEGORY = 6;
+const ENTRY_START = 7;
+const ENTRY_END = 8;
+const ENTRY_ALLOWED_AFTER = 9;
+const ENTRY_KEY = 10;
 const CATEGORY_CONNECTION = 0;
 const CATEGORY_ONE_SHOT = 1;
 const CATEGORY_ALTERNATIVE = 2;
 const CATEGORY_BLUNDER = 3;
 const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
-const MAX_CANDIDATES_PER_QUERY = 50000;
 const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
 const MAX_COUNTER_REPLY_WORDS = 12;
+const MAX_COUNTER_REPLY_BUCKET_SCAN = 1500;
 const SHARD_CACHE_MAX = 160;
 const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
-const SEARCH_RESULT_CACHE_MAX = 128;
-const SEARCH_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
+const SEARCH_RESULT_CACHE_MAX = 150;
+const SINGLE_CHAR_RESULT_CACHE_MAX = 150;
+const TWO_CHAR_RESULT_CACHE_MAX = 200;
+const SEARCH_RESULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const HANGUL_BASE = 0xac00;
 const HANGUL_END = 0xd7a3;
 const VOWEL_COUNT = 21;
@@ -35,14 +41,23 @@ const RIEUL = 5;
 const IEUNG = 11;
 const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
 const EMPTY = Object.freeze([]);
+const PREWARM_STARTS = [
+  0xac12, 0xd2c0, 0xd504, 0xc2a4, 0xc544, 0xc774, 0xd06c, 0xc720,
+  0xb974, 0xbe0c, 0xbbc0, 0xb4dc, 0xd2b8, 0xc624, 0xd750, 0xb290,
+  0xadf8, 0xc6b0, 0xc9c0, 0xc2dc, 0xac00, 0xc0ac, 0xae30
+].map((codePoint) => String.fromCodePoint(codePoint));
+const PREWARM_START_SET = new Set(PREWARM_STARTS);
 
 let indexPromise = null;
 let useFullIndex = false;
 let shardFiles = Object.create(null);
+let shardCandidateCounts = Object.create(null);
 let shardPromises = new Map();
 let baseEntries = [];
 let baseBuckets = Object.create(null);
 let baseByKey = new Map();
+let baseByLast = new Map();
+let basePrefixSorted = false;
 let baseStats = null;
 let defaultMeta = null;
 let customEntries = [];
@@ -52,6 +67,8 @@ let cachedCustomIndices = null;
 let runtimeStats = null;
 let loadedShardMeta = new Map();
 let searchResultCache = new Map();
+let singleCharResultCache = new Map();
+let twoCharResultCache = new Map();
 let runtimeVersion = 0;
 let activeSearchController = null;
 let latestSearchId = 0;
@@ -106,6 +123,24 @@ async function handleMessage(message) {
         stats: runtimeStats,
         words: selectedWords,
         lookup: message.lookup || {}
+      });
+      return;
+    }
+
+    if (message.type === "performanceSnapshot") {
+      if (typeof globalThis.gc === "function") {
+        globalThis.gc();
+      }
+      const heapBytes =
+        typeof process !== "undefined" && process.memoryUsage
+          ? Number(process.memoryUsage().heapUsed) || 0
+          : 0;
+      self.postMessage({
+        type: "performanceSnapshot",
+        id: message.id,
+        heapBytes,
+        loadedShards: loadedShardMeta.size,
+        cacheEntries: searchResultCache.size + singleCharResultCache.size + twoCharResultCache.size
       });
       return;
     }
@@ -195,10 +230,12 @@ async function ensureIndex() {
         }
         useFullIndex = false;
         shardFiles = Object.create(null);
+        shardCandidateCounts = Object.create(null);
         for (const [start, info] of Object.entries(payload.shards || {})) {
           const file = info && typeof info === "object" ? info.file : "";
           if (file) {
             shardFiles[start] = file;
+            shardCandidateCounts[start] = Number(info.count) || 0;
           }
         }
         const total = Number(payload.total || (payload.stats && payload.stats.total) || 0);
@@ -206,6 +243,8 @@ async function ensureIndex() {
         baseEntries.length = total;
         baseBuckets = Object.create(null);
         baseByKey = new Map();
+        baseByLast = new Map();
+        basePrefixSorted = Number(payload.version) >= 2;
         loadedShardMeta = new Map();
         baseStats = payload.stats || createEmptyStats();
         defaultMeta = payload.meta || null;
@@ -238,13 +277,21 @@ function loadFullIndex() {
       }
       useFullIndex = true;
       shardFiles = Object.create(null);
+      shardCandidateCounts = Object.create(null);
       shardPromises = new Map();
       loadedShardMeta = new Map();
       baseEntries = Array.isArray(payload.entries) ? payload.entries : [];
-      baseBuckets = payload.buckets && typeof payload.buckets === "object" ? payload.buckets : Object.create(null);
+      baseBuckets =
+        payload.byFirstChar && typeof payload.byFirstChar === "object"
+          ? payload.byFirstChar
+          : payload.buckets && typeof payload.buckets === "object"
+            ? payload.buckets
+            : Object.create(null);
       baseStats = payload.stats || createEmptyStats();
       defaultMeta = payload.meta || null;
+      basePrefixSorted = Number(payload.version) >= 2;
       buildBaseKeyMap();
+      buildBaseLastMap(payload.byLastChar);
       runtimeStats = { ...baseStats, buildMs: 0 };
       return payload;
     });
@@ -310,7 +357,8 @@ async function loadShard(start, signal) {
             continue;
           }
           baseEntries[index] = packed;
-          baseByKey.set(normalizeKey(packed[ENTRY_WORD]), index);
+          baseByKey.set(entryKeyFromPacked(packed), index);
+          addBaseLastIndex(entryEndFromPacked(packed), index);
           indices.push(index);
         }
         baseBuckets[start] = indices;
@@ -349,7 +397,7 @@ function trimShardCache(protectedStarts) {
   if (useFullIndex || !loadedShardMeta.size) {
     return;
   }
-  const protectedSet = new Set(protectedStarts || []);
+  const protectedSet = new Set([...(protectedStarts || []), ...PREWARM_START_SET]);
   const nowMs = Date.now();
   for (const [start, meta] of loadedShardMeta.entries()) {
     if (protectedSet.has(start)) {
@@ -379,7 +427,8 @@ function evictShard(start) {
     for (const index of indices) {
       const entry = baseEntries[index];
       if (entry) {
-        baseByKey.delete(normalizeKey(entry[ENTRY_WORD]));
+        baseByKey.delete(entryKeyFromPacked(entry));
+        removeBaseLastIndex(entryEndFromPacked(entry), index);
         baseEntries[index] = undefined;
       }
     }
@@ -392,6 +441,7 @@ function evictShard(start) {
 async function buildRuntime(extraText) {
   const started = now();
   await ensureIndex();
+  await loadShards(PREWARM_STARTS);
   clearSearchResultCache();
   runtimeVersion += 1;
   customEntries = [];
@@ -412,7 +462,11 @@ async function buildRuntime(extraText) {
       0,
       0,
       0,
-      CATEGORY_CONNECTION
+      CATEGORY_CONNECTION,
+      entry.start,
+      entry.end,
+      entry.allowedAfter,
+      entry.key
     ];
     customEntries.push(packed);
     customByKey.set(entry.key, index);
@@ -451,7 +505,11 @@ function appendOnlineCandidateWords(words, lookup) {
       0,
       0,
       0,
-      CATEGORY_CONNECTION
+      CATEGORY_CONNECTION,
+      entry.start,
+      entry.end,
+      entry.allowedAfter,
+      entry.key
     ];
     customEntries.push(packed);
     customByKey.set(entry.key, index);
@@ -536,6 +594,50 @@ function buildBaseKeyMap() {
   }
 }
 
+function buildBaseLastMap(serializedIndex) {
+  baseByLast = new Map();
+  if (serializedIndex && typeof serializedIndex === "object") {
+    for (const [end, indices] of Object.entries(serializedIndex)) {
+      if (Array.isArray(indices)) {
+        baseByLast.set(end, indices);
+      }
+    }
+    return;
+  }
+  for (let index = 0; index < baseEntries.length; index += 1) {
+    const entry = baseEntries[index];
+    if (entry) {
+      addBaseLastIndex(entryEndFromPacked(entry), index);
+    }
+  }
+}
+
+function addBaseLastIndex(end, index) {
+  if (!end) {
+    return;
+  }
+  const bucket = baseByLast.get(end);
+  if (bucket) {
+    bucket.push(index);
+  } else {
+    baseByLast.set(end, [index]);
+  }
+}
+
+function removeBaseLastIndex(end, index) {
+  const bucket = baseByLast.get(end);
+  if (!bucket) {
+    return;
+  }
+  const position = bucket.indexOf(index);
+  if (position >= 0) {
+    bucket.splice(position, 1);
+  }
+  if (!bucket.length) {
+    baseByLast.delete(end);
+  }
+}
+
 function createEmptyStats() {
   return {
     total: 0,
@@ -572,18 +674,21 @@ async function searchDictionary(options, context) {
   const exactReading = queryInfo.reading;
   const parseMs = elapsed(parseStarted);
   const cacheKey = getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page);
-  const cachedPayload = getSearchResultCache(cacheKey);
+  const cachedPayload = options.bypassCache ? null : getSearchResultCache(cacheKey, queryInfo.reading);
   if (cachedPayload) {
     const totalMs = elapsed(started);
-    cachedPayload.elapsedMs = totalMs;
-    cachedPayload.timing = {
+    const result = {
+      ...cachedPayload,
+      elapsedMs: totalMs,
+      timing: {
       ...(cachedPayload.timing || {}),
       parseMs,
       cacheHit: true,
       totalMs
+      }
     };
-    logWorkerTrace(traceId, "cache-hit", cachedPayload.timing, cachedPayload.total);
-    return cachedPayload;
+    logWorkerTrace(traceId, "cache-hit", result.timing, result.total);
+    return result;
   }
 
   if (!queryInfo.reading) {
@@ -609,15 +714,24 @@ async function searchDictionary(options, context) {
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
 
-  const collected = collectResultsFast(
+  const collected = options.legacyFullSort
+    ? collectResultsLegacy(
+        merged,
+        Boolean(options.oneShotOnly),
+        pageSize,
+        page,
+        exactWord,
+        exactReading
+      )
+    : collectResults(
     merged,
     Boolean(options.oneShotOnly),
     pageSize,
     page,
     exactWord,
     exactReading,
-    searchOptions
-  );
+        searchOptions
+      );
   const searchMs = elapsed(t1);
   throwIfAborted(signal);
 
@@ -635,10 +749,19 @@ async function searchDictionary(options, context) {
   const visibleStates = collected.visibleIndices.map((index) => getEntryState(index, searchOptions));
   const stateMs = elapsed(t3);
 
-  loadShards(getCounterShardStarts(visibleStates)).catch((error) => {
+  const counterShardStarts = getCounterShardStarts(visibleStates);
+  if (shouldPrefetchCounterShards(counterShardStarts)) {
+  loadShards(counterShardStarts).catch((error) => {
     warnWorker("반격 단어 shard 사전 로딩 실패", error);
   });
-  const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, false));
+  }
+  // Counter-word expansion can traverse several large reply buckets per row.
+  // Classification/counts are already exact; defer only the display-only word
+  // list for broad searches so it cannot dominate keystroke latency.
+  const skipCounterWords = candidates.length > COUNTER_WORDS_SKIP_THRESHOLD;
+  const results = visibleStates.map((state) =>
+    createSearchResultEntry(state, searchOptions, skipCounterWords)
+  );
 
   const totalMs = elapsed(started);
   const payload = {
@@ -659,10 +782,13 @@ async function searchDictionary(options, context) {
       stateMs,
       totalMs,
       cacheHit: false,
-      loadedShards: loadedShardMeta.size
+      loadedShards: loadedShardMeta.size,
+      candidateCount: candidates.length
     }
   };
-  putSearchResultCache(cacheKey, payload);
+  if (!options.bypassCache) {
+    putSearchResultCache(cacheKey, payload, queryInfo.reading);
+  }
   logWorkerTrace(traceId, "search", payload.timing, payload.total);
   return payload;
 }
@@ -674,25 +800,27 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     queryInfo && queryInfo.reading ? queryInfo.reading : "",
     sourceMode,
     options.oneShotOnly ? "1" : "0",
+    String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
     String(Math.max(1, Math.floor(Number(page)) || 1)),
     String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT))
   ].join("|");
 }
 
-function getSearchResultCache(cacheKey) {
+function getSearchResultCache(cacheKey, reading) {
   if (!cacheKey) {
     return null;
   }
-  const entry = searchResultCache.get(cacheKey);
+  const cache = getSearchResultCacheStore(reading);
+  const entry = cache.get(cacheKey);
   if (!entry) {
     return null;
   }
   if (entry.expiresAt <= Date.now()) {
-    searchResultCache.delete(cacheKey);
+    cache.delete(cacheKey);
     return null;
   }
-  searchResultCache.delete(cacheKey);
-  searchResultCache.set(cacheKey, {
+  cache.delete(cacheKey);
+  cache.set(cacheKey, {
     payload: entry.payload,
     expiresAt: entry.expiresAt,
     usedAt: Date.now()
@@ -700,36 +828,64 @@ function getSearchResultCache(cacheKey) {
   return entry.payload;
 }
 
-function putSearchResultCache(cacheKey, payload) {
+function putSearchResultCache(cacheKey, payload, reading) {
   if (!cacheKey || !payload) {
     return;
   }
-  searchResultCache.set(cacheKey, {
+  const cache = getSearchResultCacheStore(reading);
+  cache.set(cacheKey, {
     payload,
     expiresAt: Date.now() + SEARCH_RESULT_CACHE_TTL_MS,
     usedAt: Date.now()
   });
-  trimSearchResultCache();
+  trimSearchResultCache(cache, getSearchResultCacheLimit(reading));
 }
 
-function trimSearchResultCache() {
+function getSearchResultCacheStore(reading) {
+  const length = String(reading || "").length;
+  if (length === 1) {
+    return singleCharResultCache;
+  }
+  if (length === 2) {
+    return twoCharResultCache;
+  }
+  return searchResultCache;
+}
+
+function getSearchResultCacheLimit(reading) {
+  const length = String(reading || "").length;
+  if (length === 1) {
+    return SINGLE_CHAR_RESULT_CACHE_MAX;
+  }
+  if (length === 2) {
+    return TWO_CHAR_RESULT_CACHE_MAX;
+  }
+  return SEARCH_RESULT_CACHE_MAX;
+}
+
+function trimSearchResultCache(cache, maxSize) {
   const nowMs = Date.now();
-  for (const [key, entry] of searchResultCache.entries()) {
+  for (const [key, entry] of cache.entries()) {
     if (!entry || entry.expiresAt <= nowMs) {
-      searchResultCache.delete(key);
+      cache.delete(key);
     }
   }
-  while (searchResultCache.size > SEARCH_RESULT_CACHE_MAX) {
-    const oldest = searchResultCache.keys().next().value;
-    searchResultCache.delete(oldest);
+  while (cache.size > maxSize) {
+    const oldest = cache.keys().next().value;
+    cache.delete(oldest);
   }
 }
 
 function clearSearchResultCache() {
   searchResultCache.clear();
+  singleCharResultCache.clear();
+  twoCharResultCache.clear();
 }
 
 function logWorkerTrace(traceId, phase, timing, total) {
+  if (!self.__SEARCH_DEBUG__) {
+    return;
+  }
   if (typeof console === "undefined" || typeof console.debug !== "function") {
     return;
   }
@@ -752,6 +908,12 @@ function warnWorker(message, details) {
 
 function createSearchOptions(options) {
   const usedKeySet = new Set();
+  for (const rawKey of Array.isArray(options && options.usedKeys) ? options.usedKeys : []) {
+    const key = normalizeKey(rawKey);
+    if (key) {
+      usedKeySet.add(key);
+    }
+  }
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     usedKeySet,
@@ -823,6 +985,19 @@ function getCounterShardStarts(states) {
   return Array.from(starts);
 }
 
+function shouldPrefetchCounterShards(starts) {
+  return (starts || []).every((start) => getCandidateCountForStart(start) <= MAX_COUNTER_REPLY_BUCKET_SCAN);
+}
+
+function getCandidateCountForStart(start) {
+  const loaded = baseBuckets[start];
+  const customCount = (customByStart.get(start) || EMPTY).length || 0;
+  if (Array.isArray(loaded)) {
+    return loaded.length + customCount;
+  }
+  return (Number(shardCandidateCounts[start]) || 0) + customCount;
+}
+
 function searchByPrefixes(prefixes) {
   const uniquePrefixes = Array.from(new Set((prefixes || []).filter(Boolean)));
   if (!uniquePrefixes.length) {
@@ -833,29 +1008,23 @@ function searchByPrefixes(prefixes) {
     const prefix = uniquePrefixes[0];
     const bucket = getBucket(prefix[0]);
     if (prefix.length === 1) {
-      return bucket.slice(0, MAX_CANDIDATES_PER_QUERY);
+      return bucket.slice();
     }
     if (!customEntries.length) {
-      const filtered = [];
-      for (const index of bucket) {
-        if (entryReading(index).startsWith(prefix)) {
-          filtered.push(index);
-          if (filtered.length >= MAX_CANDIDATES_PER_QUERY) {
-            break;
-          }
-        }
-      }
-      return filtered;
+      return basePrefixSorted
+        ? getBasePrefixRange(bucket, prefix)
+        : bucket.filter((index) => entryReading(index).startsWith(prefix));
     }
   }
 
   const candidates = [];
   const seen = new Set();
   for (const prefix of uniquePrefixes) {
-    for (const index of getBucket(prefix[0])) {
-      if (candidates.length >= MAX_CANDIDATES_PER_QUERY) {
-        return candidates;
-      }
+    const bucket = getBucket(prefix[0]);
+    const baseCandidates = !customEntries.length && prefix.length > 1 && basePrefixSorted
+      ? getBasePrefixRange(bucket, prefix)
+      : bucket;
+    for (const index of baseCandidates) {
       if (seen.has(index)) {
         continue;
       }
@@ -866,9 +1035,6 @@ function searchByPrefixes(prefixes) {
       candidates.push(index);
     }
     for (const index of getCustomIndices()) {
-      if (candidates.length >= MAX_CANDIDATES_PER_QUERY) {
-        return candidates;
-      }
       if (seen.has(index)) {
         continue;
       }
@@ -887,9 +1053,6 @@ function searchByReply(starts) {
   const seen = new Set();
   for (const start of starts || []) {
     for (const index of getBucket(start)) {
-      if (candidates.length >= MAX_CANDIDATES_PER_QUERY) {
-        return candidates;
-      }
       if (seen.has(index)) {
         continue;
       }
@@ -898,6 +1061,29 @@ function searchByReply(starts) {
     }
   }
   return candidates;
+}
+
+function getBasePrefixRange(indices, prefix) {
+  if (!Array.isArray(indices) || !indices.length || !prefix) {
+    return [];
+  }
+  const first = lowerBoundByReading(indices, prefix);
+  const last = lowerBoundByReading(indices, `${prefix}\uffff`);
+  return indices.slice(first, last);
+}
+
+function lowerBoundByReading(indices, target) {
+  let low = 0;
+  let high = indices.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (entryReading(indices[middle]) < target) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
 }
 
 function includeExactCandidates(candidates, exactWord, exactReading) {
@@ -909,7 +1095,11 @@ function includeExactCandidates(candidates, exactWord, exactReading) {
     merged.push(exactIndex);
   }
   if (exactReading && exactReading.length > 1) {
-    for (const index of getBucket(exactReading[0])) {
+    const bucket = getBucket(exactReading[0]);
+    const exactCandidates = basePrefixSorted && !customEntries.length
+      ? getBasePrefixRange(bucket, exactReading)
+      : bucket;
+    for (const index of exactCandidates) {
       if (!seen.has(index) && entryReading(index) === exactReading) {
         seen.add(index);
         merged.push(index);
@@ -971,36 +1161,17 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     }
   }
 
-  sortIndexGroup(oneShotIndices, exactWord, exactReading);
-  sortIndexGroup(alternativeIndices, exactWord, exactReading);
-  sortIndexGroup(blunderIndices, exactWord, exactReading);
-  sortConnectionIndexGroup(safeConnectionIndices);
-
-  const categoryCounts = {
-    oneShot: oneShotIndices.length,
-    alternativeOneShot: alternativeIndices.length,
-    connection: safeConnectionIndices.length,
-    blunder: blunderIndices.length
-  };
-
-  const orderedIndices = oneShotOnly
-    ? oneShotIndices.concat(alternativeIndices, safeConnectionIndices, blunderIndices)
-    : safeConnectionIndices.concat(alternativeIndices, oneShotIndices, blunderIndices);
-
-  const pinnedIndices = oneShotOnly
-    ? pinExactMatchIndices(orderedIndices, exactWord, exactReading)
-    : orderedIndices;
-
-  const visibleIndices = pinnedIndices.slice(start, start + size);
-
-  return {
-    total,
-    categoryCounts,
-    page: currentPage,
-    pageSize: size,
-    pageCount,
-    visibleIndices
-  };
+  return collectCategorizedIndexGroups(
+    oneShotIndices,
+    alternativeIndices,
+    safeConnectionIndices,
+    blunderIndices,
+    oneShotOnly,
+    pageSize,
+    page,
+    exactWord,
+    exactReading
+  );
 }
 
 function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
@@ -1022,37 +1193,140 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
     }
   }
 
-  const total = candidates.length;
-  const shouldSort = total <= LARGE_CANDIDATE_SORT_THRESHOLD;
-  if (shouldSort) {
-    sortIndexGroup(oneShotIndices, exactWord, exactReading);
-    sortIndexGroup(alternativeIndices, exactWord, exactReading);
-    sortIndexGroup(blunderIndices, exactWord, exactReading);
-  }
-  if (!oneShotOnly || shouldSort) {
-    sortConnectionIndexGroup(connectionIndices);
-  }
+  return collectCategorizedIndexGroups(
+    oneShotIndices,
+    alternativeIndices,
+    connectionIndices,
+    blunderIndices,
+    oneShotOnly,
+    pageSize,
+    page,
+    exactWord,
+    exactReading
+  );
+}
 
+// Benchmark-only control path.  Keeping it here makes the performance report
+// reproducible against the exact previous full-sort behavior without exposing
+// it to the UI.
+function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord, exactReading) {
+  const oneShotIndices = [];
+  const alternativeIndices = [];
+  const blunderIndices = [];
+  const connectionIndices = [];
+  for (const index of candidates) {
+    const category = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+    if (category === CATEGORY_ONE_SHOT) oneShotIndices.push(index);
+    else if (category === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
+    else if (category === CATEGORY_BLUNDER) blunderIndices.push(index);
+    else connectionIndices.push(index);
+  }
+  sortIndexGroup(oneShotIndices, exactWord, exactReading);
+  sortIndexGroup(alternativeIndices, exactWord, exactReading);
+  sortIndexGroup(blunderIndices, exactWord, exactReading);
+  sortConnectionIndexGroup(connectionIndices);
   const categoryCounts = {
     oneShot: oneShotIndices.length,
     alternativeOneShot: alternativeIndices.length,
     connection: connectionIndices.length,
     blunder: blunderIndices.length
   };
-
-  const orderedIndices = oneShotOnly
+  const ordered = oneShotOnly
     ? oneShotIndices.concat(alternativeIndices, connectionIndices, blunderIndices)
     : connectionIndices.concat(alternativeIndices, oneShotIndices, blunderIndices);
-  const pinnedIndices = oneShotOnly && shouldSort
-    ? pinExactMatchIndices(orderedIndices, exactWord, exactReading)
-    : orderedIndices;
+  const pinned = pinExactMatchIndices(ordered, exactWord, exactReading);
+  const size = Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT);
+  const currentPage = Math.min(
+    Math.max(1, Math.floor(Number(page)) || 1),
+    Math.max(1, Math.ceil(ordered.length / size))
+  );
+  return {
+    total: ordered.length,
+    categoryCounts,
+    page: currentPage,
+    pageSize: size,
+    pageCount: Math.max(1, Math.ceil(ordered.length / size)),
+    visibleIndices: pinned.slice((currentPage - 1) * size, currentPage * size)
+  };
+}
 
+function collectCategorizedIndexGroups(
+  oneShotIndices,
+  alternativeIndices,
+  connectionIndices,
+  blunderIndices,
+  oneShotOnly,
+  pageSize,
+  page,
+  exactWord,
+  exactReading
+) {
+  const categoryCounts = {
+    oneShot: oneShotIndices.length,
+    alternativeOneShot: alternativeIndices.length,
+    connection: connectionIndices.length,
+    blunder: blunderIndices.length
+  };
+  const total =
+    categoryCounts.oneShot +
+    categoryCounts.alternativeOneShot +
+    categoryCounts.connection +
+    categoryCounts.blunder;
   const size = Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT);
   const requestedPage = Math.floor(Number(page)) || 1;
   const pageCount = Math.max(1, Math.ceil(total / size));
   const currentPage = Math.min(Math.max(1, requestedPage), pageCount);
   const start = (currentPage - 1) * size;
-  const visibleIndices = pinnedIndices.slice(start, start + size);
+  const end = start + size;
+
+  let pinned = EMPTY;
+  if (exactWord || exactReading) {
+    const groups = [oneShotIndices, alternativeIndices, blunderIndices];
+    const exactMatches = [];
+    for (const group of groups) {
+      for (let index = group.length - 1; index >= 0; index -= 1) {
+        if (isExactQueryMatchIndex(group[index], exactWord, exactReading)) {
+          exactMatches.push(group[index]);
+          group.splice(index, 1);
+        }
+      }
+    }
+    if (exactMatches.length) {
+      exactMatches.sort((left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading));
+      pinned = exactMatches;
+    }
+  }
+
+  const orderedGroups = oneShotOnly
+    ? [
+        { indices: pinned, compare: compareIndexReading },
+        { indices: oneShotIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
+        { indices: alternativeIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
+        { indices: connectionIndices, compare: compareConnectionIndex },
+        { indices: blunderIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) }
+      ]
+    : [
+        { indices: pinned, compare: compareIndexReading },
+        { indices: connectionIndices, compare: compareConnectionIndex },
+        { indices: alternativeIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
+        { indices: oneShotIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
+        { indices: blunderIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) }
+      ];
+
+  const visibleIndices = [];
+  let offset = 0;
+  for (const group of orderedGroups) {
+    const length = group.indices.length;
+    const localStart = Math.max(0, start - offset);
+    const localEnd = Math.min(length, end - offset);
+    if (localEnd > localStart) {
+      visibleIndices.push(...selectSortedIndexRange(group.indices, localStart, localEnd, group.compare));
+    }
+    offset += length;
+    if (offset >= end) {
+      break;
+    }
+  }
 
   return {
     total,
@@ -1062,6 +1336,65 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
     pageCount,
     visibleIndices
   };
+}
+
+function selectSortedIndexRange(indices, start, end, compare) {
+  if (!indices.length || end <= start) {
+    return [];
+  }
+  const upperBound = Math.min(indices.length, end);
+  if (upperBound < indices.length) {
+    quickSelectIndices(indices, upperBound - 1, compare);
+  }
+  const selected = indices.slice(0, upperBound);
+  selected.sort(compare);
+  return selected.slice(start, upperBound);
+}
+
+function quickSelectIndices(indices, target, compare) {
+  let left = 0;
+  let right = indices.length - 1;
+  while (left < right) {
+    const pivot = indices[(left + right) >>> 1];
+    let low = left;
+    let high = right;
+    while (low <= high) {
+      while (compare(indices[low], pivot) < 0) low += 1;
+      while (compare(indices[high], pivot) > 0) high -= 1;
+      if (low <= high) {
+        const value = indices[low];
+        indices[low] = indices[high];
+        indices[high] = value;
+        low += 1;
+        high -= 1;
+      }
+    }
+    if (target <= high) {
+      right = high;
+    } else if (target >= low) {
+      left = low;
+    } else {
+      return;
+    }
+  }
+}
+
+function compareIndexSearchGroup(left, right, exactWord, exactReading) {
+  const leftExact = isExactQueryMatchIndex(left, exactWord, exactReading);
+  const rightExact = isExactQueryMatchIndex(right, exactWord, exactReading);
+  if (leftExact !== rightExact) {
+    return leftExact ? -1 : 1;
+  }
+  return compareIndexReading(left, right);
+}
+
+function compareConnectionIndex(left, right) {
+  const leftFollowers = Number(getPackedEntry(left)[ENTRY_FOLLOWER_COUNT]) || 0;
+  const rightFollowers = Number(getPackedEntry(right)[ENTRY_FOLLOWER_COUNT]) || 0;
+  if (leftFollowers !== rightFollowers) {
+    return leftFollowers - rightFollowers;
+  }
+  return compareIndexReading(left, right);
 }
 
 function sortIndexGroup(indices, exactWord, exactReading) {
@@ -1276,6 +1609,13 @@ function getCounterReplyWords(state, predicate, options) {
   if (!state.blunder) {
     return [];
   }
+  // This is display-only detail.  Scanning a 10k+ reply bucket to list at
+  // most 12 names is the historic outlier for words such as 값/틀.
+  for (const start of state.allowedAfter) {
+    if (getBucket(start).length > MAX_COUNTER_REPLY_BUCKET_SCAN) {
+      return [];
+    }
+  }
   const replyOptions = createPlayedOptions(options, state.index);
   const replies = [];
   const seen = new Set();
@@ -1379,7 +1719,13 @@ function compareReading(left, right) {
   if (left.reading.length !== right.reading.length) {
     return left.reading.length - right.reading.length;
   }
-  return left.word.localeCompare(right.word, "ko");
+  if (left.word < right.word) {
+    return -1;
+  }
+  if (left.word > right.word) {
+    return 1;
+  }
+  return 0;
 }
 
 function compareIndexReading(left, right) {
@@ -1440,7 +1786,9 @@ function parseCustomLine(line) {
     word,
     reading,
     language: /^[A-Za-z]+$/.test(word) ? "e" : "k",
-    start: reading[0]
+    start: reading[0],
+    end: getLastSyllable(reading),
+    allowedAfter: getAllowedStartSyllables(getLastSyllable(reading))
   };
 }
 
@@ -1487,6 +1835,11 @@ function getSearchStartSyllables(syllable) {
 }
 
 function getAllowedAfter(index) {
+  const entry = getPackedEntry(index);
+  const allowed = entry && entry[ENTRY_ALLOWED_AFTER];
+  if (Array.isArray(allowed)) {
+    return allowed;
+  }
   return getAllowedStartSyllables(entryEnd(index));
 }
 
@@ -1765,7 +2118,7 @@ function entryWord(index) {
 }
 
 function entryKey(index) {
-  return entryWord(index).toLowerCase();
+  return entryKeyFromPacked(getPackedEntry(index));
 }
 
 function entryReading(index) {
@@ -1773,12 +2126,33 @@ function entryReading(index) {
 }
 
 function entryStart(index) {
-  return entryReading(index)[0];
+  const entry = getPackedEntry(index);
+  return entryStartFromPacked(entry);
 }
 
 function entryEnd(index) {
-  const reading = entryReading(index);
-  return getLastSyllable(reading);
+  return entryEndFromPacked(getPackedEntry(index));
+}
+
+function entryKeyFromPacked(entry) {
+  if (entry && entry[ENTRY_KEY]) {
+    return String(entry[ENTRY_KEY]);
+  }
+  return normalizeKey(entry && entry[ENTRY_WORD]);
+}
+
+function entryStartFromPacked(entry) {
+  if (entry && entry[ENTRY_START]) {
+    return String(entry[ENTRY_START]);
+  }
+  return String(entry && entry[ENTRY_READING] || "")[0] || "";
+}
+
+function entryEndFromPacked(entry) {
+  if (entry && entry[ENTRY_END]) {
+    return String(entry[ENTRY_END]);
+  }
+  return getLastSyllable(entry && entry[ENTRY_READING]);
 }
 
 function now() {

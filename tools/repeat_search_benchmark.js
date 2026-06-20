@@ -40,6 +40,9 @@ const DEFAULT_KEYWORDS = [
   "나무",
   "바다"
 ];
+const DEFAULT_QUERY = process.env.SEARCH_BENCH_QUERY_CODEPOINT
+  ? String.fromCodePoint(Number.parseInt(process.env.SEARCH_BENCH_QUERY_CODEPOINT, 16))
+  : "가";
 
 function percentile(values, p) {
   if (!values.length) {
@@ -110,7 +113,7 @@ function createWorker() {
 
 function buildScenarioQueries(scenario) {
   if (scenario.mode === "same") {
-    return Array.from({ length: scenario.count }, () => "가");
+    return Array.from({ length: scenario.count }, () => DEFAULT_QUERY);
   }
   if (scenario.mode === "typing-delete") {
     const pattern = ["가", "가나", "가나다", "가나", "가", ""];
@@ -188,6 +191,7 @@ function createHarness(worker) {
         query,
         sourceMode: (options && options.sourceMode) || "starts",
         oneShotOnly: Boolean(options && options.oneShotOnly),
+        bypassCache: process.env.SEARCH_BENCH_BYPASS_CACHE === "1",
         usedKeys: [],
         page: 1,
         pageSize: 50

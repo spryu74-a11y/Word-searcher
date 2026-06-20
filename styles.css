@@ -423,6 +423,18 @@ h2 {
   -webkit-overflow-scrolling: touch;
 }
 
+.result-virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.result-virtual-window {
+  position: absolute;
+  inset: 0 0 auto;
+  width: 100%;
+  will-change: transform;
+}
+
 .result-pager {
   display: flex;
   align-items: center;

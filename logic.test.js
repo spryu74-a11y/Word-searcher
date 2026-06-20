@@ -588,6 +588,33 @@ assert.strictEqual(longInputValidation.reason, "too_long");
 
 const nfdQuery = "\u1100\u1161\u1102\u1161";
 assert.strictEqual(logic.validateSearchQuery(nfdQuery).ok, true);
+
+const usedAvailabilityDictionary = logic.createDictionary(
+  ["\uac00\ub098", "\ub098\ub2e4", "\ub2e4\ub77c"].join("\n")
+);
+const beforeUsedAvailability = logic.searchDictionary(usedAvailabilityDictionary, {
+  query: "\uac00",
+  sourceMode: "starts",
+  pageSize: 10
+});
+const afterUsedAvailability = logic.searchDictionary(usedAvailabilityDictionary, {
+  query: "\uac00",
+  sourceMode: "starts",
+  pageSize: 10,
+  usedKeys: ["\ub098\ub2e4"]
+});
+assert.strictEqual(
+  beforeUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").followerCount,
+  1
+);
+assert.strictEqual(
+  afterUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").followerCount,
+  0
+);
+assert.strictEqual(
+  afterUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").oneShot,
+  true
+);
 assert.strictEqual(logic.toReading(nfdQuery), "가나");
 assert.strictEqual(logic.getLastReadingSyllable("계란"), "란");
 assert.deepStrictEqual(logic.getQueryInfo("계란", "reply").starts, ["란", "난"]);
