@@ -738,6 +738,77 @@
     return counts;
   }
 
+  function createOneShotCounterStartCounts(entries) {
+    const countsByReplyStart = new Map();
+    for (const reply of entries) {
+      if (reply.followerCount !== 1) {
+        continue;
+      }
+      let countsByPlayedStart = countsByReplyStart.get(reply.start);
+      if (!countsByPlayedStart) {
+        countsByPlayedStart = new Map();
+        countsByReplyStart.set(reply.start, countsByPlayedStart);
+      }
+      for (const playedStart of reply.allowedAfter || []) {
+        countsByPlayedStart.set(playedStart, (countsByPlayedStart.get(playedStart) || 0) + 1);
+      }
+    }
+    return countsByReplyStart;
+  }
+
+  function countOneShotCounters(entry, oneShotStartCounts, counterStartCounts) {
+    let count = countByAllowedStarts(entry, oneShotStartCounts, entry.oneShot);
+    for (const replyStart of entry.allowedAfter || []) {
+      const countsByPlayedStart = counterStartCounts.get(replyStart);
+      count += (countsByPlayedStart && countsByPlayedStart.get(entry.start)) || 0;
+    }
+    // A word cannot be its own reply. The static one-shot count above and the
+    // one-follower counter map both include it when it loops to its own start.
+    if (entry.followerCount === 1 && (entry.allowedAfter || []).includes(entry.start)) {
+      count -= 1;
+    }
+    return Math.max(0, count);
+  }
+
+  function createReturnTrapCounterStartCounts(entries) {
+    const countsByReplyStart = new Map();
+    for (const reply of entries) {
+      if (
+        reply.followerCount <= 1 ||
+        reply.followerCount !== reply.killableFollowerCount + 1
+      ) {
+        continue;
+      }
+      let countsByPlayedStart = countsByReplyStart.get(reply.start);
+      if (!countsByPlayedStart) {
+        countsByPlayedStart = new Map();
+        countsByReplyStart.set(reply.start, countsByPlayedStart);
+      }
+      for (const playedStart of reply.allowedAfter || []) {
+        countsByPlayedStart.set(playedStart, (countsByPlayedStart.get(playedStart) || 0) + 1);
+      }
+    }
+    return countsByReplyStart;
+  }
+
+  function countReturnTrapCounters(entry, counterStartCounts) {
+    let count = 0;
+    for (const replyStart of entry.allowedAfter || []) {
+      const countsByPlayedStart = counterStartCounts.get(replyStart);
+      count += (countsByPlayedStart && countsByPlayedStart.get(entry.start)) || 0;
+    }
+    // The played word is unavailable, so it cannot be selected as its own
+    // counter even if it loops back to the same start syllable.
+    if (
+      entry.followerCount > 1 &&
+      entry.followerCount === entry.killableFollowerCount + 1 &&
+      (entry.allowedAfter || []).includes(entry.start)
+    ) {
+      count -= 1;
+    }
+    return Math.max(0, count);
+  }
+
   function refreshDictionaryIndexes(dictionary, started) {
     const entries = dictionary.entries || [];
     const startedAt = typeof started === "number" ? started : now();
@@ -774,6 +845,7 @@
       entry.oneShot = entry.followerCount === 0;
       entry.oneShotReplyCount = 0;
       entry.alternativeOneShotReplyCount = 0;
+      entry.returnTrapReplyCount = 0;
       entry.killableFollowerCount = 0;
       entry.alternativeOneShot = false;
       entry.blunder = false;
@@ -788,9 +860,14 @@
       }
     }
 
+    const oneShotCounterStartCounts = createOneShotCounterStartCounts(entries);
     const killableStartCounts = new Map();
     for (const entry of entries) {
-      entry.oneShotReplyCount = countByAllowedStarts(entry, oneShotStartCounts, entry.oneShot);
+      entry.oneShotReplyCount = countOneShotCounters(
+        entry,
+        oneShotStartCounts,
+        oneShotCounterStartCounts
+      );
     }
 
     let changed = true;
@@ -847,6 +924,18 @@
       }
     }
 
+    const returnTrapCounterStartCounts = createReturnTrapCounterStartCounts(entries);
+    for (const entry of entries) {
+      if (entry.oneShot || entry.alternativeOneShot || entry.blunder) {
+        continue;
+      }
+      const returnTrapReplyCount = countReturnTrapCounters(entry, returnTrapCounterStartCounts);
+      if (returnTrapReplyCount > 0) {
+        entry.returnTrapReplyCount = returnTrapReplyCount;
+        entry.blunder = true;
+      }
+    }
+
     const alternativeOneShotStartCounts = countStarts(entries, (entry) => entry.alternativeOneShot);
     killableStartCounts.clear();
     for (const entry of entries) {
@@ -862,7 +951,7 @@
         entry,
         alternativeOneShotStartCounts,
         entry.alternativeOneShot
-      );
+      ) + (entry.returnTrapReplyCount || 0);
       entry.killableFollowerCount = countByAllowedStarts(entry, killableStartCounts, entry.blunder);
     }
 
@@ -1326,35 +1415,6 @@
     );
   }
 
-  function createUsedKeySet(dictionary, usedKeys) {
-    if (!Array.isArray(usedKeys) || !usedKeys.length || !dictionary || !dictionary.byKey) {
-      return new Set();
-    }
-    const result = new Set();
-    for (const rawKey of usedKeys) {
-      const key = String(rawKey || "").trim().toLowerCase();
-      if (key && dictionary.byKey.has(key)) {
-        result.add(key);
-      }
-    }
-    return result;
-  }
-
-  function createUsedStartCounts(dictionary, usedKeySet) {
-    const counts = new Map();
-    if (!usedKeySet || !usedKeySet.size || !dictionary || !dictionary.byKey) {
-      return counts;
-    }
-    for (const key of usedKeySet) {
-      const entry = dictionary.byKey.get(key);
-      if (!entry || !entry.start) {
-        continue;
-      }
-      counts.set(entry.start, (counts.get(entry.start) || 0) + 1);
-    }
-    return counts;
-  }
-
   function isUsedEntry(entry, options) {
     return Boolean(entry && options && options.usedKeySet && options.usedKeySet.has(entry.key));
   }
@@ -1740,15 +1800,16 @@
     const exactReading = queryInfo.reading;
     const oneShotOnly = Boolean(options.oneShotOnly);
     const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
-    const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
     const searchOptions = {
       oneShotOnly,
       pageSize,
       page,
       exactWord,
       exactReading,
-      usedKeySet,
-      usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
+      // "사용됨" is presentation-only state. It must not change search
+      // ordering or the one-shot/blunder classification.
+      usedKeySet: new Set(),
+      usedStartCounts: new Map()
     };
     const collected =
       sourceMode === "reply"
@@ -2040,7 +2101,6 @@ function initApp(core) {
     showUsedControls: true,
     sourceMode: "starts",
     usedWordIds: loadUsedWordIds(),
-    usedVersion: 0,
     virtualResults: null,
     worker: createSearchWorker(core, {
       textUrl: defaultDictionaryTextUrl,
@@ -2424,14 +2484,8 @@ function initApp(core) {
   }
   if (elements.resetUsedWords) {
     addSearchEventListener(elements.resetUsedWords, "click", () => {
-      const hadUsedWords = state.usedWordIds.size > 0;
       state.usedWordIds.clear();
       saveUsedWordIds();
-      if (hadUsedWords) {
-        state.usedVersion += 1;
-        clearSearchResultCache();
-        scheduleSearch(0);
-      }
       renderUsedStateForCurrentResults();
     });
   }
@@ -2814,8 +2868,6 @@ function initApp(core) {
         query,
         sourceMode: state.sourceMode,
         oneShotOnly: elements.oneShotOnly.checked,
-        usedKeys: Array.from(state.usedWordIds),
-        usedVersion: state.usedVersion,
         page: state.page,
         pageSize: getPageSize()
       }
@@ -3040,7 +3092,6 @@ function initApp(core) {
       core.toReading(query),
       state.sourceMode,
       elements.oneShotOnly.checked ? "1" : "0",
-      String(state.usedVersion),
       String(state.page),
       String(getPageSize())
     ].join("|");
@@ -3465,19 +3516,13 @@ function initApp(core) {
     if (!id) {
       return false;
     }
-    const wasUsed = state.usedWordIds.has(id);
     if (isUsed) {
       state.usedWordIds.add(id);
     } else {
       state.usedWordIds.delete(id);
     }
     saveUsedWordIds();
-    const nextUsed = state.usedWordIds.has(id);
-    if (nextUsed !== wasUsed) {
-      state.usedVersion += 1;
-      clearSearchResultCache();
-    }
-    return nextUsed;
+    return state.usedWordIds.has(id);
   }
 
   function getUsedWordId(entry) {
@@ -5422,7 +5467,6 @@ function initApp(core) {
       const isUsed = setUsedWord(entry, input.checked);
       input.checked = isUsed;
       row.classList.toggle("used-word", isUsed);
-      scheduleSearch(0);
     });
 
     const text = document.createElement("span");

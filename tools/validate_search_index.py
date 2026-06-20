@@ -40,6 +40,14 @@ def main() -> None:
     expected = set(range(len(entries)))
     assert first_seen == expected, "byFirstChar must cover every entry exactly once"
     assert last_seen == expected, "byLastChar must cover every entry exactly once"
+
+    # Playing 값표 removes 표준값's only safe follow-up; its remaining 값
+    # entries are all blunders, so 값표 must be a blunder as well.
+    by_key = {str(entry[10]): entry for entry in entries if len(entry) > 10}
+    value_table = by_key.get("값표")
+    assert value_table is not None, "값표 must be present in the search index"
+    assert value_table[5] >= 1, "값표 must expose its return-trap counter"
+    assert value_table[6] == 3, "값표 must be categorized as a blunder"
     print(f"search index v2 validated: entries={len(entries):,} first={len(by_first):,} last={len(by_last):,}")
 
 

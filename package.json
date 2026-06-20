@@ -2,6 +2,7 @@
   "scripts": {
     "test": "node logic.test.js",
     "test:regression": "node tools/search-regression-test.js",
+    "test:worker": "node tools/search-worker-regression-test.js",
     "test:performance": "node --expose-gc tools/search-performance-benchmark.js",
     "bench:search": "node --expose-gc tools/search-performance-benchmark.js",
     "test:index": "python tools/validate_search_index.py"

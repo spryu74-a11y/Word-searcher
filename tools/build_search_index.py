@@ -132,6 +132,71 @@ def count_starts(entries: list[dict[str, object]], predicate) -> dict[str, int]:
     return counts
 
 
+def create_one_shot_counter_start_counts(
+    entries: list[dict[str, object]],
+) -> dict[str, dict[str, int]]:
+    """Index replies that become one-shot once the played word is removed."""
+    counts_by_reply_start: dict[str, dict[str, int]] = {}
+    for reply in entries:
+        if reply["followerCount"] != 1:
+            continue
+        reply_start = str(reply["start"])
+        counts_by_played_start = counts_by_reply_start.setdefault(reply_start, {})
+        for played_start in reply["allowed"]:  # type: ignore[index]
+            counts_by_played_start[played_start] = counts_by_played_start.get(played_start, 0) + 1
+    return counts_by_reply_start
+
+
+def count_one_shot_counters(
+    entry: dict[str, object],
+    one_shot_start_counts: dict[str, int],
+    counter_start_counts: dict[str, dict[str, int]],
+) -> int:
+    count = count_by_allowed(entry, one_shot_start_counts, bool(entry["oneShot"]))
+    entry_start = str(entry["start"])
+    for reply_start in entry["allowed"]:  # type: ignore[index]
+        count += counter_start_counts.get(reply_start, {}).get(entry_start, 0)
+
+    # A word cannot be its own reply. Both source counts include that entry
+    # when it starts with one of its own allowed continuation syllables.
+    if entry["followerCount"] == 1 and entry_start in entry["allowed"]:  # type: ignore[operator]
+        count -= 1
+    return max(0, count)
+
+
+def create_return_trap_counter_start_counts(
+    entries: list[dict[str, object]],
+) -> dict[str, dict[str, int]]:
+    """Index replies whose one safe follow-up is the just-played word."""
+    counts_by_reply_start: dict[str, dict[str, int]] = {}
+    for reply in entries:
+        follower_count = int(reply["followerCount"])
+        if follower_count <= 1 or follower_count != int(reply["killableFollowerCount"]) + 1:
+            continue
+        counts_by_played_start = counts_by_reply_start.setdefault(str(reply["start"]), {})
+        for played_start in reply["allowed"]:  # type: ignore[index]
+            counts_by_played_start[played_start] = counts_by_played_start.get(played_start, 0) + 1
+    return counts_by_reply_start
+
+
+def count_return_trap_counters(
+    entry: dict[str, object],
+    counter_start_counts: dict[str, dict[str, int]],
+) -> int:
+    entry_start = str(entry["start"])
+    count = sum(
+        counter_start_counts.get(reply_start, {}).get(entry_start, 0)
+        for reply_start in entry["allowed"]  # type: ignore[index]
+    )
+    if (
+        entry["followerCount"] > 1
+        and entry["followerCount"] == entry["killableFollowerCount"] + 1
+        and entry_start in entry["allowed"]  # type: ignore[operator]
+    ):
+        count -= 1
+    return max(0, count)
+
+
 def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str, int]:
     start_counts = count_starts(entries, lambda _entry: True)
     one_shot_start_counts: dict[str, int] = {}
@@ -144,6 +209,7 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
         entry["oneShot"] = follower_count == 0
         entry["oneShotReplyCount"] = 0
         entry["alternativeOneShotReplyCount"] = 0
+        entry["returnTrapReplyCount"] = 0
         entry["killableFollowerCount"] = 0
         entry["alternativeOneShot"] = False
         entry["blunder"] = False
@@ -155,8 +221,13 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
         else:
             en += 1
 
+    one_shot_counter_start_counts = create_one_shot_counter_start_counts(entries)
     for entry in entries:
-        entry["oneShotReplyCount"] = count_by_allowed(entry, one_shot_start_counts, bool(entry["oneShot"]))
+        entry["oneShotReplyCount"] = count_one_shot_counters(
+            entry,
+            one_shot_start_counts,
+            one_shot_counter_start_counts,
+        )
 
     changed = True
     passes = 0
@@ -197,6 +268,15 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
                 entry["alternativeOneShot"] = True
                 changed = True
 
+    return_trap_counter_start_counts = create_return_trap_counter_start_counts(entries)
+    for entry in entries:
+        if entry["oneShot"] or entry["alternativeOneShot"] or entry["blunder"]:
+            continue
+        return_trap_reply_count = count_return_trap_counters(entry, return_trap_counter_start_counts)
+        if return_trap_reply_count:
+            entry["returnTrapReplyCount"] = return_trap_reply_count
+            entry["blunder"] = True
+
     alternative_start_counts = count_starts(entries, lambda entry: bool(entry["alternativeOneShot"]))
     killable_start_counts = count_starts(entries, lambda entry: bool(entry["blunder"]))
     one_shot = 0
@@ -207,7 +287,7 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
             entry,
             alternative_start_counts,
             bool(entry["alternativeOneShot"]),
-        )
+        ) + entry["returnTrapReplyCount"]
         entry["killableFollowerCount"] = count_by_allowed(
             entry,
             killable_start_counts,

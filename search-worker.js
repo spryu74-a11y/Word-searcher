@@ -1,9 +1,9 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620";
-const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620";
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r1";
+const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r1";
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "search-index-v2-20260620";
+const SHARD_VERSION = "search-index-v2-20260620-r1";
 const DEFAULT_LIMIT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 80;
 const ENTRY_WORD = 0;
@@ -800,7 +800,6 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     queryInfo && queryInfo.reading ? queryInfo.reading : "",
     sourceMode,
     options.oneShotOnly ? "1" : "0",
-    String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
     String(Math.max(1, Math.floor(Number(page)) || 1)),
     String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT))
   ].join("|");
@@ -907,13 +906,9 @@ function warnWorker(message, details) {
 }
 
 function createSearchOptions(options) {
+  // "사용됨" is local display state. Search classification always uses the
+  // immutable dictionary so marking a row never makes later queries slower.
   const usedKeySet = new Set();
-  for (const rawKey of Array.isArray(options && options.usedKeys) ? options.usedKeys : []) {
-    const key = normalizeKey(rawKey);
-    if (key) {
-      usedKeySet.add(key);
-    }
-  }
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     usedKeySet,

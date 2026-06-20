@@ -97,7 +97,7 @@ assert.strictEqual(allBlunderFollowerResult.categoryCounts.alternativeOneShot, 1
 assert.strictEqual(allBlunderFollowerResult.results[0].word, "그릇");
 
 const priorityDictionary = logic.createDictionary(
-  ["가끝", "가나", "나라", "라끝", "가다", "다다", "다다다", "가바", "바끝"].join("\n")
+  ["가끝", "가나", "나라", "라끝", "가다", "다람", "람마", "마다", "가바", "바끝"].join("\n")
 );
 const oneShotPriority = logic.searchDictionary(priorityDictionary, {
   query: "가",
@@ -125,7 +125,7 @@ assert.strictEqual(
 );
 
 const connectionFollowerPriorityDictionary = logic.createDictionary(
-  ["가나", "나가", "나다", "다가", "가하", "하가"].join("\n")
+  ["가나", "나가", "나다", "다람", "람마", "마다", "가하", "하람", "람바", "바하"].join("\n")
 );
 const connectionFollowerPriority = logic.searchDictionary(connectionFollowerPriorityDictionary, {
   query: "가",
@@ -151,8 +151,8 @@ assert.strictEqual(
   1
 );
 
-const paged = logic.searchDictionary(riskyDictionary, {
-  query: "",
+const paged = logic.searchDictionary(priorityDictionary, {
+  query: "가",
   sourceMode: "starts",
   oneShotOnly: false,
   page: 2,
@@ -164,8 +164,8 @@ assert.strictEqual(paged.pageSize, 1);
 assert.strictEqual(paged.results.length, 1);
 assert.ok(paged.pageCount >= 2);
 
-const clampedPage = logic.searchDictionary(riskyDictionary, {
-  query: "",
+const clampedPage = logic.searchDictionary(priorityDictionary, {
+  query: "가",
   sourceMode: "starts",
   oneShotOnly: false,
   page: 999,
@@ -401,7 +401,7 @@ assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "자유�
 assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "자유로워"));
 assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "가감해"));
 assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "내디뎌"));
-assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "몽따쥬"));
+assert.ok(surfaceFormDictionary.entries.some((entry) => entry.word === "몽따쥬"));
 assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "몽띠쥬"));
 assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "이쁘쥬"));
 assert.ok(!surfaceFormDictionary.entries.some((entry) => entry.word === "그렇쥬"));
@@ -562,7 +562,9 @@ const valueTable = logic.searchDictionary(valueTableDictionary, {
 });
 const valueTableEntry = valueTable.results.find((entry) => entry.word === "값표");
 assert.ok(valueTableEntry);
-assert.ok(!valueTableEntry.blunder);
+assert.strictEqual(valueTableEntry.followerCount, 1);
+assert.strictEqual(valueTableEntry.oneShotReplyCount, 1);
+assert.ok(valueTableEntry.blunder);
 
 const standardValue = logic.searchDictionary(valueTableDictionary, {
   query: "표",
@@ -573,6 +575,21 @@ const standardValue = logic.searchDictionary(valueTableDictionary, {
 const standardValueEntry = standardValue.results.find((entry) => entry.word === "표준값");
 assert.ok(standardValueEntry);
 assert.ok(!standardValueEntry.alternativeOneShot);
+
+const valueReturnTrapDictionary = logic.createDictionary(
+  ["값표", "표준값", "값가", "가끝", "표가", "가나", "나마", "마가"].join("\n")
+);
+const valueReturnTrap = logic.searchDictionary(valueReturnTrapDictionary, {
+  query: "값",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+});
+const valueReturnTrapEntry = valueReturnTrap.results.find((entry) => entry.word === "값표");
+assert.ok(valueReturnTrapEntry);
+assert.strictEqual(valueReturnTrapEntry.oneShotReplyCount, 0);
+assert.strictEqual(valueReturnTrapEntry.alternativeOneShotReplyCount, 1);
+assert.ok(valueReturnTrapEntry.blunder);
 
 const emptyInputValidation = logic.validateSearchQuery("   ");
 assert.strictEqual(emptyInputValidation.ok, false);
@@ -609,11 +626,11 @@ assert.strictEqual(
 );
 assert.strictEqual(
   afterUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").followerCount,
-  0
+  1
 );
 assert.strictEqual(
   afterUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").oneShot,
-  true
+  false
 );
 assert.strictEqual(logic.toReading(nfdQuery), "가나");
 assert.strictEqual(logic.getLastReadingSyllable("계란"), "란");
