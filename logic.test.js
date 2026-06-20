@@ -626,12 +626,28 @@ assert.strictEqual(
 );
 assert.strictEqual(
   afterUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").followerCount,
-  1
+  0
 );
 assert.strictEqual(
   afterUsedAvailability.results.find((entry) => entry.word === "\uac00\ub098").oneShot,
-  false
+  true
 );
+
+const kitUsedDictionary = logic.createDictionary(["끝킷", "킷값"].join("\n"));
+const kitBeforeUsed = logic.searchDictionary(kitUsedDictionary, {
+  query: "끝",
+  sourceMode: "starts",
+  pageSize: 10
+});
+const kitAfterUsed = logic.searchDictionary(kitUsedDictionary, {
+  query: "끝",
+  sourceMode: "starts",
+  pageSize: 10,
+  usedKeys: ["킷값"]
+});
+assert.ok(kitBeforeUsed.results.find((entry) => entry.word === "끝킷").blunder);
+assert.strictEqual(kitAfterUsed.results.find((entry) => entry.word === "끝킷").followerCount, 0);
+assert.ok(kitAfterUsed.results.find((entry) => entry.word === "끝킷").oneShot);
 assert.strictEqual(logic.toReading(nfdQuery), "가나");
 assert.strictEqual(logic.getLastReadingSyllable("계란"), "란");
 assert.deepStrictEqual(logic.getQueryInfo("계란", "reply").starts, ["란", "난"]);

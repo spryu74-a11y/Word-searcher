@@ -1,9 +1,9 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r1";
-const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r1";
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r2";
+const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r2";
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "search-index-v2-20260620-r1";
+const SHARD_VERSION = "search-index-v2-20260620-r2";
 const DEFAULT_LIMIT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 80;
 const ENTRY_WORD = 0;
@@ -735,7 +735,7 @@ async function searchDictionary(options, context) {
   const searchMs = elapsed(t1);
   throwIfAborted(signal);
 
-  const isDynamic = searchOptions.hasUsedWords || searchOptions.forceDynamic;
+  const isDynamic = searchOptions.forceDynamic;
 
   const t2 = now();
   if (isDynamic) {
@@ -800,6 +800,7 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     queryInfo && queryInfo.reading ? queryInfo.reading : "",
     sourceMode,
     options.oneShotOnly ? "1" : "0",
+    String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
     String(Math.max(1, Math.floor(Number(page)) || 1)),
     String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT))
   ].join("|");
@@ -906,9 +907,13 @@ function warnWorker(message, details) {
 }
 
 function createSearchOptions(options) {
-  // "사용됨" is local display state. Search classification always uses the
-  // immutable dictionary so marking a row never makes later queries slower.
   const usedKeySet = new Set();
+  for (const rawKey of Array.isArray(options && options.usedKeys) ? options.usedKeys : []) {
+    const key = normalizeKey(rawKey);
+    if (key) {
+      usedKeySet.add(key);
+    }
+  }
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     usedKeySet,
@@ -1115,22 +1120,23 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     return collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options);
   }
 
-  const total = candidates.length;
-  const size = Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT);
-  const requestedPage = Math.floor(Number(page)) || 1;
-  const pageCount = Math.max(1, Math.ceil(total / size));
-  const currentPage = Math.min(Math.max(1, requestedPage), pageCount);
-  const start = (currentPage - 1) * size;
-
   const oneShotIndices = [];
   const alternativeIndices = [];
   const blunderIndices = [];
   const safeConnectionIndices = [];
 
-  const shouldRunDynamic = total <= LARGE_CANDIDATE_SORT_THRESHOLD;
-
   for (const index of candidates) {
-    if (shouldRunDynamic) {
+    if (options.hasUsedWords && !options.forceDynamic) {
+      const followerCount = getAvailableFollowerCount(index, options);
+      if (followerCount === 0) {
+        oneShotIndices.push(index);
+        continue;
+      }
+      const staticCat = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
+      else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
+      else safeConnectionIndices.push(index);
+    } else {
       const followerCount = getAvailableFollowerCount(index, options);
       if (followerCount === 0) {
         oneShotIndices.push(index);
@@ -1147,12 +1153,6 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
           safeConnectionIndices.push(index);
         }
       }
-    } else {
-      const staticCat = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
-      if (staticCat === CATEGORY_ONE_SHOT) oneShotIndices.push(index);
-      else if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
-      else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
-      else safeConnectionIndices.push(index);
     }
   }
 
@@ -1165,7 +1165,8 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
     pageSize,
     page,
     exactWord,
-    exactReading
+    exactReading,
+    options
   );
 }
 
@@ -1197,7 +1198,8 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
     pageSize,
     page,
     exactWord,
-    exactReading
+    exactReading,
+    options
   );
 }
 
@@ -1254,7 +1256,8 @@ function collectCategorizedIndexGroups(
   pageSize,
   page,
   exactWord,
-  exactReading
+  exactReading,
+  options
 ) {
   const categoryCounts = {
     oneShot: oneShotIndices.length,
@@ -1292,17 +1295,18 @@ function collectCategorizedIndexGroups(
     }
   }
 
+  const compareConnection = createConnectionIndexComparator(options);
   const orderedGroups = oneShotOnly
     ? [
         { indices: pinned, compare: compareIndexReading },
         { indices: oneShotIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
         { indices: alternativeIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
-        { indices: connectionIndices, compare: compareConnectionIndex },
+        { indices: connectionIndices, compare: compareConnection },
         { indices: blunderIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) }
       ]
     : [
         { indices: pinned, compare: compareIndexReading },
-        { indices: connectionIndices, compare: compareConnectionIndex },
+        { indices: connectionIndices, compare: compareConnection },
         { indices: alternativeIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
         { indices: oneShotIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
         { indices: blunderIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) }
@@ -1392,6 +1396,20 @@ function compareConnectionIndex(left, right) {
   return compareIndexReading(left, right);
 }
 
+function createConnectionIndexComparator(options) {
+  if (!options || !options.hasUsedWords) {
+    return compareConnectionIndex;
+  }
+  return (left, right) => {
+    const leftFollowers = getAvailableFollowerCount(left, options);
+    const rightFollowers = getAvailableFollowerCount(right, options);
+    if (leftFollowers !== rightFollowers) {
+      return leftFollowers - rightFollowers;
+    }
+    return compareIndexReading(left, right);
+  };
+}
+
 function sortIndexGroup(indices, exactWord, exactReading) {
   indices.sort((left, right) => {
     const leftExact = isExactQueryMatchIndex(left, exactWord, exactReading);
@@ -1457,7 +1475,7 @@ function getEntryState(index, options) {
   let oneShotReplyCount = Number(entry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
   let alternativeOneShotReplyCount = Number(entry[ENTRY_ALTERNATIVE_REPLY_COUNT]) || 0;
 
-  if (options.forceDynamic || options.hasUsedWords) {
+  if (options.forceDynamic) {
     followerCount = getAvailableFollowerCount(index, options);
     const replyOptions = createPlayedOptions(options, index);
     const oneShotCounters = getOneShotCounterIndices(index, replyOptions);
@@ -1469,6 +1487,15 @@ function getEntryState(index, options) {
     alternativeOneShot = !oneShot && !blunder && category === CATEGORY_ALTERNATIVE;
     if (blunder) {
       alternativeOneShot = false;
+    }
+  } else if (options.hasUsedWords) {
+    followerCount = getAvailableFollowerCount(index, options);
+    oneShot = followerCount === 0;
+    if (oneShot) {
+      alternativeOneShot = false;
+      blunder = false;
+      oneShotReplyCount = 0;
+      alternativeOneShotReplyCount = 0;
     }
   }
 

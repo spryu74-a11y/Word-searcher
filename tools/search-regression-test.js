@@ -28,8 +28,8 @@ const used = logic.searchDictionary(dictionary, {
   usedKeys: ["\ub098\ub2e4"]
 });
 const usedEntry = used.results.find((entry) => entry.word === "\uac00\ub098");
-assert.strictEqual(usedEntry.followerCount, 1);
-assert.strictEqual(usedEntry.oneShot, false);
+assert.strictEqual(usedEntry.followerCount, 0);
+assert.strictEqual(usedEntry.oneShot, true);
 
 assert.strictEqual(logic.validateSearchQuery("   ").reason, "empty");
 assert.strictEqual(logic.validateSearchQuery("!!!123").reason, "invalid");

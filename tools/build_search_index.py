@@ -269,6 +269,7 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
                 changed = True
 
     return_trap_counter_start_counts = create_return_trap_counter_start_counts(entries)
+    activated_return_trap_pairs: set[tuple[str, str]] = set()
     for entry in entries:
         if entry["oneShot"] or entry["alternativeOneShot"] or entry["blunder"]:
             continue
@@ -276,6 +277,27 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
         if return_trap_reply_count:
             entry["returnTrapReplyCount"] = return_trap_reply_count
             entry["blunder"] = True
+            entry_start = str(entry["start"])
+            for reply_start in entry["allowed"]:  # type: ignore[index]
+                if entry_start in return_trap_counter_start_counts.get(reply_start, {}):
+                    activated_return_trap_pairs.add((reply_start, entry_start))
+
+    # Promote only the direct return target. A broad second fixed-point pass
+    # would reclassify unrelated chains throughout the dictionary.
+    if activated_return_trap_pairs:
+        for entry in entries:
+            follower_count = int(entry["followerCount"])
+            if (
+                entry["oneShot"]
+                or entry["alternativeOneShot"]
+                or entry["blunder"]
+                or follower_count <= 1
+                or follower_count != int(entry["killableFollowerCount"]) + 1
+            ):
+                continue
+            entry_start = str(entry["start"])
+            if any((entry_start, start) in activated_return_trap_pairs for start in entry["allowed"]):  # type: ignore[index]
+                entry["alternativeOneShot"] = True
 
     alternative_start_counts = count_starts(entries, lambda entry: bool(entry["alternativeOneShot"]))
     killable_start_counts = count_starts(entries, lambda entry: bool(entry["blunder"]))

@@ -45,9 +45,12 @@ def main() -> None:
     # entries are all blunders, so 값표 must be a blunder as well.
     by_key = {str(entry[10]): entry for entry in entries if len(entry) > 10}
     value_table = by_key.get("값표")
+    standard_value = by_key.get("표준값")
     assert value_table is not None, "값표 must be present in the search index"
+    assert standard_value is not None, "표준값 must be present in the search index"
     assert value_table[5] >= 1, "값표 must expose its return-trap counter"
     assert value_table[6] == 3, "값표 must be categorized as a blunder"
+    assert standard_value[6] == 2, "표준값 must be categorized as an alternative one-shot"
     print(f"search index v2 validated: entries={len(entries):,} first={len(by_first):,} last={len(by_last):,}")
 
 
