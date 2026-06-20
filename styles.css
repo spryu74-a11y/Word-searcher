@@ -88,6 +88,8 @@ button {
 }
 
 .guild-rail {
+  position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
   flex-direction: column;
@@ -170,6 +172,39 @@ button {
 .guild-icon.selected::before {
   height: 38px;
   opacity: 1;
+}
+
+.guild-icon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 30;
+  top: 50%;
+  left: calc(100% + 10px);
+  width: max-content;
+  max-width: 180px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: #111214;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+  color: #f2f3f5;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(4px, -50%);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .guild-icon:hover::after,
+  .guild-icon:focus-visible::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+    visibility: visible;
+  }
 }
 
 .guild-separator {
@@ -1669,6 +1704,10 @@ body.settings-channel .member-panel {
 }
 
 @media (hover: none), (pointer: coarse) {
+  .guild-icon::after {
+    display: none;
+  }
+
   .guild-icon:hover {
     background: #313338;
     color: #dbdee1;

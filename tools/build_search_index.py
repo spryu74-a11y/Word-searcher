@@ -20,6 +20,7 @@ NIEUN = 2
 RIEUL = 5
 IEUNG = 11
 IOTIZED_VOWELS = {2, 3, 6, 7, 12, 17, 20}
+FORCED_ALTERNATIVE_ENDINGS = {"값"}
 
 
 def is_hangul_syllable(value: str) -> bool:
@@ -305,6 +306,11 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
     alternative = 0
 
     for entry in entries:
+        if entry["language"] == "k" and entry["end"] in FORCED_ALTERNATIVE_ENDINGS:
+            entry["oneShot"] = False
+            entry["alternativeOneShot"] = True
+            entry["blunder"] = False
+            entry["oneShotReplyCount"] = 0
         entry["alternativeOneShotReplyCount"] = count_by_allowed(
             entry,
             alternative_start_counts,

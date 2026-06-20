@@ -1,9 +1,9 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r3";
-const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r3";
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r4";
+const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r4";
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "search-index-v2-20260620-r3";
+const SHARD_VERSION = "search-index-v2-20260620-r4";
 const DEFAULT_LIMIT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 80;
 const ENTRY_WORD = 0;
@@ -24,6 +24,7 @@ const CATEGORY_BLUNDER = 3;
 const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
 const MAX_COUNTER_REPLY_WORDS = 12;
+const FORCED_ALTERNATIVE_ENDINGS = new Set(["값"]);
 const MAX_COUNTER_REPLY_BUCKET_SCAN = 1500;
 const SHARD_CACHE_MAX = 160;
 const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -538,7 +539,11 @@ function recalculateCustomEntries() {
     const entry = customEntries[offset];
     const followerCount = getAvailableFollowerCount(index, options);
     entry[ENTRY_FOLLOWER_COUNT] = followerCount;
-    entry[ENTRY_CATEGORY] = followerCount === 0 ? CATEGORY_ONE_SHOT : CATEGORY_CONNECTION;
+    entry[ENTRY_CATEGORY] = isForcedAlternativePacked(entry)
+      ? CATEGORY_ALTERNATIVE
+      : followerCount === 0
+        ? CATEGORY_ONE_SHOT
+        : CATEGORY_CONNECTION;
   }
 
   runtimeStats = {
@@ -549,7 +554,9 @@ function recalculateCustomEntries() {
     oneShot:
       (baseStats ? baseStats.oneShot : 0) +
       customEntries.filter((entry) => entry[ENTRY_CATEGORY] === CATEGORY_ONE_SHOT).length,
-    alternativeOneShot: baseStats ? baseStats.alternativeOneShot : 0,
+    alternativeOneShot:
+      (baseStats ? baseStats.alternativeOneShot : 0) +
+      customEntries.filter((entry) => entry[ENTRY_CATEGORY] === CATEGORY_ALTERNATIVE).length,
     invalid: baseStats ? baseStats.invalid : 0,
     custom: customEntries.length,
     buildMs: 0
@@ -1126,13 +1133,17 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
   const safeConnectionIndices = [];
 
   for (const index of candidates) {
+    if (isForcedAlternativePacked(getPackedEntry(index))) {
+      alternativeIndices.push(index);
+      continue;
+    }
     if (options.hasUsedWords && !options.forceDynamic) {
       const followerCount = getAvailableFollowerCount(index, options);
       if (followerCount === 0) {
         oneShotIndices.push(index);
         continue;
       }
-      const staticCat = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      const staticCat = getEntryCategory(index);
       if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
       else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
       else safeConnectionIndices.push(index);
@@ -1146,7 +1157,7 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
       if (checkHasOneShotCounter(index, replyOptions) || checkHasAltOneShotCounter(index, replyOptions)) {
         blunderIndices.push(index);
       } else {
-        const staticCat = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+        const staticCat = getEntryCategory(index);
         if (staticCat === CATEGORY_ALTERNATIVE) {
           alternativeIndices.push(index);
         } else {
@@ -1177,7 +1188,7 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
   const connectionIndices = [];
 
   for (const index of candidates) {
-    const category = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+    const category = getEntryCategory(index);
     if (category === CATEGORY_ONE_SHOT) {
       oneShotIndices.push(index);
     } else if (category === CATEGORY_ALTERNATIVE) {
@@ -1212,7 +1223,7 @@ function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord
   const blunderIndices = [];
   const connectionIndices = [];
   for (const index of candidates) {
-    const category = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+    const category = getEntryCategory(index);
     if (category === CATEGORY_ONE_SHOT) oneShotIndices.push(index);
     else if (category === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
     else if (category === CATEGORY_BLUNDER) blunderIndices.push(index);
@@ -1440,7 +1451,7 @@ function pinExactMatchIndices(indices, exactWord, exactReading) {
   const exactMatches = [];
   const rest = [];
   for (const index of indices) {
-    const category = Number(getPackedEntry(index)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+    const category = getEntryCategory(index);
     if (
       isExactQueryMatchIndex(index, exactWord, exactReading) &&
       category !== CATEGORY_CONNECTION
@@ -1467,7 +1478,8 @@ function getEntryState(index, options) {
   }
 
   const entry = getPackedEntry(index);
-  const category = Number(entry[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+  const category = getEntryCategory(index);
+  const forcedAlternative = isForcedAlternativePacked(entry);
   let followerCount = Number(entry[ENTRY_FOLLOWER_COUNT]) || 0;
   let oneShot = category === CATEGORY_ONE_SHOT;
   let alternativeOneShot = category === CATEGORY_ALTERNATIVE;
@@ -1480,23 +1492,29 @@ function getEntryState(index, options) {
     const replyOptions = createPlayedOptions(options, index);
     const oneShotCounters = getOneShotCounterIndices(index, replyOptions);
     const alternativeOneShotCounters = getAlternativeOneShotCounterIndices(index, replyOptions);
-    oneShot = followerCount === 0;
+    oneShot = !forcedAlternative && followerCount === 0;
     oneShotReplyCount = oneShotCounters.length;
     alternativeOneShotReplyCount = alternativeOneShotCounters.length;
     blunder = followerCount > 0 && (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
-    alternativeOneShot = !oneShot && !blunder && category === CATEGORY_ALTERNATIVE;
-    if (blunder) {
+    alternativeOneShot = forcedAlternative || (!oneShot && !blunder && category === CATEGORY_ALTERNATIVE);
+    if (blunder && !forcedAlternative) {
       alternativeOneShot = false;
     }
   } else if (options.hasUsedWords) {
     followerCount = getAvailableFollowerCount(index, options);
-    oneShot = followerCount === 0;
+    oneShot = !forcedAlternative && followerCount === 0;
     if (oneShot) {
       alternativeOneShot = false;
       blunder = false;
       oneShotReplyCount = 0;
       alternativeOneShotReplyCount = 0;
     }
+  }
+  if (forcedAlternative) {
+    oneShot = false;
+    alternativeOneShot = true;
+    blunder = false;
+    oneShotReplyCount = 0;
   }
 
   const state = {
@@ -1596,7 +1614,7 @@ function getAlternativeOneShotCounterIndices(index, options) {
       }
       seen.add(replyIndex);
       const entry = getPackedEntry(replyIndex);
-      const category = Number(entry[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      const category = getEntryCategory(replyIndex);
       if (category === CATEGORY_ALTERNATIVE && getAvailableFollowerCount(replyIndex, options) > 0) {
         replies.push(replyIndex);
       }
@@ -2054,7 +2072,10 @@ function checkHasOneShotCounter(index, options) {
   for (const start of getAllowedAfter(index)) {
     const found = someInBucket(start, (replyIndex) => {
       if (replyIndex === index || isUsedIndex(replyIndex, options)) return false;
-      return getAvailableFollowerCount(replyIndex, options) === 0;
+      return (
+        !isForcedAlternativePacked(getPackedEntry(replyIndex)) &&
+        getAvailableFollowerCount(replyIndex, options) === 0
+      );
     });
     if (found) return true;
   }
@@ -2065,7 +2086,7 @@ function checkHasAltOneShotCounter(index, options) {
   for (const start of getAllowedAfter(index)) {
     const found = someInBucket(start, (replyIndex) => {
       if (replyIndex === index || isUsedIndex(replyIndex, options)) return false;
-      const cat = Number(getPackedEntry(replyIndex)[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+      const cat = getEntryCategory(replyIndex);
       return cat === CATEGORY_ALTERNATIVE && getAvailableFollowerCount(replyIndex, options) > 0;
     });
     if (found) return true;
@@ -2103,7 +2124,7 @@ function getStaticFollowerCount(index) {
 }
 
 function canBecomeOneShot(index, options) {
-  return getAvailableFollowerCount(index, options) === 0;
+  return !isForcedAlternativePacked(getPackedEntry(index)) && getAvailableFollowerCount(index, options) === 0;
 }
 
 function createPlayedOptions(options, playedIndex) {
@@ -2154,6 +2175,21 @@ function entryStart(index) {
 
 function entryEnd(index) {
   return entryEndFromPacked(getPackedEntry(index));
+}
+
+function isForcedAlternativePacked(entry) {
+  return Boolean(
+    entry &&
+    entry[ENTRY_LANGUAGE] !== "e" &&
+    FORCED_ALTERNATIVE_ENDINGS.has(entryEndFromPacked(entry))
+  );
+}
+
+function getEntryCategory(index) {
+  const entry = getPackedEntry(index);
+  return isForcedAlternativePacked(entry)
+    ? CATEGORY_ALTERNATIVE
+    : Number(entry[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
 }
 
 function entryKeyFromPacked(entry) {

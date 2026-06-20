@@ -26,6 +26,7 @@
   const DEFAULT_LIMIT = 260;
   const MAX_SEARCH_QUERY_LENGTH = 80;
   const MAX_COUNTER_REPLY_WORDS = 12;
+  const FORCED_ALTERNATIVE_ENDINGS = new Set(["값"]);
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
     ["겨", "기다"],
@@ -524,6 +525,14 @@
     };
   }
 
+  function isForcedAlternativeEntry(entry) {
+    return Boolean(
+      entry &&
+      entry.language === "ko" &&
+      FORCED_ALTERNATIVE_ENDINGS.has(entry.end || getLastReadingSyllable(entry.reading))
+    );
+  }
+
   function isCombinedHangulLetterName(value) {
     const word = String(value || "").replace(/\s+/g, "");
     if (!word) {
@@ -965,6 +974,12 @@
     const alternativeOneShotStartCounts = countStarts(entries, (entry) => entry.alternativeOneShot);
     killableStartCounts.clear();
     for (const entry of entries) {
+      if (isForcedAlternativeEntry(entry)) {
+        entry.oneShot = false;
+        entry.alternativeOneShot = true;
+        entry.blunder = false;
+        entry.oneShotReplyCount = 0;
+      }
       if (entry.blunder) {
         killableStartCounts.set(entry.start, (killableStartCounts.get(entry.start) || 0) + 1);
       }
@@ -1591,15 +1606,16 @@
     }
 
     const followerCount = getAvailableFollowerCount(dictionary, entry, options);
-    const oneShot = followerCount === 0;
+    const forcedAlternative = isForcedAlternativeEntry(entry);
+    const oneShot = !forcedAlternative && followerCount === 0;
     const state = {
       ...entry,
       followerCount,
       oneShot,
-      alternativeOneShot: oneShot ? false : Boolean(entry.alternativeOneShot),
+      alternativeOneShot: forcedAlternative || (!oneShot && Boolean(entry.alternativeOneShot)),
       alternativeOneShotReplyCount: oneShot ? 0 : entry.alternativeOneShotReplyCount,
-      oneShotReplyCount: oneShot ? 0 : entry.oneShotReplyCount,
-      blunder: oneShot ? false : Boolean(entry.blunder)
+      oneShotReplyCount: oneShot || forcedAlternative ? 0 : entry.oneShotReplyCount,
+      blunder: oneShot || forcedAlternative ? false : Boolean(entry.blunder)
     };
     options.stateCache.set(entry.key, state);
     return state;
@@ -1610,7 +1626,7 @@
   }
 
   function canBecomeOneShotEntry(dictionary, entry, options) {
-    return getAvailableFollowerCount(dictionary, entry, options) === 0;
+    return !isForcedAlternativeEntry(entry) && getAvailableFollowerCount(dictionary, entry, options) === 0;
   }
 
   function getCounterReplyWords(dictionary, entry, predicate, options) {
@@ -5698,7 +5714,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=search-index-v2-20260620-r3", window.location.href)
+      new URL("./search-worker.js?v=search-index-v2-20260620-r4", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

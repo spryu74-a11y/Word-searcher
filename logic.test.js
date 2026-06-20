@@ -574,7 +574,18 @@ const standardValue = logic.searchDictionary(valueTableDictionary, {
 });
 const standardValueEntry = standardValue.results.find((entry) => entry.word === "표준값");
 assert.ok(standardValueEntry);
-assert.ok(!standardValueEntry.alternativeOneShot);
+assert.ok(standardValueEntry.alternativeOneShot);
+
+const isolatedValueDictionary = logic.createDictionary(["몸값", "나무"].join("\n"));
+const isolatedValue = logic.searchDictionary(isolatedValueDictionary, {
+  query: "몸",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+}).results.find((entry) => entry.word === "몸값");
+assert.ok(isolatedValue);
+assert.ok(isolatedValue.alternativeOneShot);
+assert.ok(!isolatedValue.oneShot);
 
 const valueReturnTrapDictionary = logic.createDictionary(
   ["값표", "표준값", "값가", "가끝", "표가", "가나", "나마", "마가"].join("\n")
