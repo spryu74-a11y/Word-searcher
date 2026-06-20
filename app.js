@@ -5698,7 +5698,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=search-stability-20260619", window.location.href)
+      new URL("./search-worker.js?v=search-index-v2-20260620-r3", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

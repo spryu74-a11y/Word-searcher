@@ -1,9 +1,9 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r2";
-const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r2";
+const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r3";
+const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r3";
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "search-index-v2-20260620-r2";
+const SHARD_VERSION = "search-index-v2-20260620-r3";
 const DEFAULT_LIMIT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 80;
 const ENTRY_WORD = 0;
