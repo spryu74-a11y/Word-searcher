@@ -518,6 +518,8 @@
       followerCount: 0,
       oneShotReplyCount: 0,
       alternativeOneShotReplyCount: 0,
+      contextOneShotReplyWords: [],
+      contextAlternativeOneShotReplyWords: [],
       killableFollowerCount: 0,
       alternativeOneShot: false,
       blunder: false,
@@ -750,7 +752,7 @@
   function createOneShotCounterStartCounts(entries) {
     const countsByReplyStart = new Map();
     for (const reply of entries) {
-      if (reply.followerCount !== 1) {
+      if (reply.followerCount !== 1 || isForcedAlternativeEntry(reply)) {
         continue;
       }
       let countsByPlayedStart = countsByReplyStart.get(reply.start);
@@ -779,43 +781,251 @@
     return Math.max(0, count);
   }
 
-  function createReturnTrapCounterStartCounts(entries) {
-    const countsByReplyStart = new Map();
-    for (const reply of entries) {
-      if (
-        reply.followerCount <= 1 ||
-        reply.followerCount !== reply.killableFollowerCount + 1
-      ) {
+  function applyContextualConnectionClassification(entries, byStart) {
+    const connections = entries.filter(
+      (entry) => !entry.oneShot && !entry.alternativeOneShot && !entry.blunder
+    );
+    for (const entry of entries) {
+      entry.contextOneShotReplyWords = [];
+      entry.contextAlternativeOneShotReplyWords = [];
+    }
+    if (!connections.length) {
+      return;
+    }
+
+    const connectionSet = new Set(connections);
+    const connectionByStart = new Map();
+    const reverseConnectionsByStart = new Map();
+    for (const entry of connections) {
+      const startBucket = connectionByStart.get(entry.start);
+      if (startBucket) {
+        startBucket.push(entry);
+      } else {
+        connectionByStart.set(entry.start, [entry]);
+      }
+      for (const start of entry.allowedAfter || []) {
+        const reverseBucket = reverseConnectionsByStart.get(start);
+        if (reverseBucket) {
+          reverseBucket.push(entry);
+        } else {
+          reverseConnectionsByStart.set(start, [entry]);
+        }
+      }
+    }
+
+    const connectionStartCounts = countStarts(connections, () => true);
+    const connectionFollowerCounts = new Map();
+    const seedPredecessorsByCandidate = new Map();
+    for (const entry of connections) {
+      const connectionFollowerCount = countByAllowedStarts(
+        entry,
+        connectionStartCounts,
+        true
+      );
+      connectionFollowerCounts.set(entry, connectionFollowerCount);
+      if (connectionFollowerCount !== 1) {
         continue;
       }
-      let countsByPlayedStart = countsByReplyStart.get(reply.start);
-      if (!countsByPlayedStart) {
-        countsByPlayedStart = new Map();
-        countsByReplyStart.set(reply.start, countsByPlayedStart);
+
+      let soleConnection = null;
+      for (const start of entry.allowedAfter || []) {
+        for (const reply of connectionByStart.get(start) || []) {
+          if (reply === entry) {
+            continue;
+          }
+          soleConnection = reply;
+          break;
+        }
+        if (soleConnection) {
+          break;
+        }
       }
-      for (const playedStart of reply.allowedAfter || []) {
-        countsByPlayedStart.set(playedStart, (countsByPlayedStart.get(playedStart) || 0) + 1);
+      if (!soleConnection) {
+        continue;
+      }
+      const seedBucket = seedPredecessorsByCandidate.get(soleConnection);
+      if (seedBucket) {
+        seedBucket.push(entry);
+      } else {
+        seedPredecessorsByCandidate.set(soleConnection, [entry]);
       }
     }
-    return countsByReplyStart;
+
+    const results = [];
+    for (const candidate of connections) {
+      const seedPredecessors = seedPredecessorsByCandidate.get(candidate);
+      if (!seedPredecessors || !seedPredecessors.length) {
+        continue;
+      }
+      const result = analyzeContextualConnectionCandidate(
+        candidate,
+        seedPredecessors,
+        byStart,
+        connectionSet,
+        reverseConnectionsByStart,
+        connectionFollowerCounts
+      );
+      if (result) {
+        results.push(result);
+      }
+    }
+
+    // Each result is scoped to the state after that candidate has been played.
+    // Apply them together so one candidate's contextual category never becomes
+    // a global seed while another candidate is being analysed.
+    for (const result of results) {
+      const entry = result.entry;
+      entry.contextOneShotReplyWords = result.contextOneShotReplyWords;
+      entry.contextAlternativeOneShotReplyWords = result.contextAlternativeOneShotReplyWords;
+      entry.oneShotReplyCount = result.contextOneShotReplyWords.length;
+      entry.alternativeOneShotReplyCount = result.contextAlternativeOneShotReplyWords.length;
+      if (result.category === "oneShot") {
+        entry.oneShot = true;
+      } else if (result.category === "alternativeOneShot") {
+        entry.alternativeOneShot = true;
+      } else if (result.category === "blunder") {
+        entry.blunder = true;
+      }
+    }
   }
 
-  function countReturnTrapCounters(entry, counterStartCounts) {
-    let count = 0;
-    for (const replyStart of entry.allowedAfter || []) {
-      const countsByPlayedStart = counterStartCounts.get(replyStart);
-      count += (countsByPlayedStart && countsByPlayedStart.get(entry.start)) || 0;
+  function analyzeContextualConnectionCandidate(
+    candidate,
+    seedPredecessors,
+    byStart,
+    connectionSet,
+    reverseConnectionsByStart,
+    connectionFollowerCounts
+  ) {
+    const CONTEXT_ONE_SHOT = 1;
+    const CONTEXT_ALTERNATIVE = 2;
+    const CONTEXT_BLUNDER = 3;
+    const contextStates = new Map();
+    const remainingConnections = new Map();
+    const winningStartCounts = new Map();
+    const queue = [];
+
+    function hasWinningFollower(entry) {
+      return (entry.allowedAfter || []).some((start) => (winningStartCounts.get(start) || 0) > 0);
     }
-    // The played word is unavailable, so it cannot be selected as its own
-    // counter even if it loops back to the same start syllable.
-    if (
-      entry.followerCount > 1 &&
-      entry.followerCount === entry.killableFollowerCount + 1 &&
-      (entry.allowedAfter || []).includes(entry.start)
-    ) {
-      count -= 1;
+
+    function mark(entry, category) {
+      if (!entry || entry === candidate || contextStates.has(entry)) {
+        return;
+      }
+      contextStates.set(entry, category);
+      if (category === CONTEXT_ONE_SHOT || category === CONTEXT_ALTERNATIVE) {
+        winningStartCounts.set(entry.start, (winningStartCounts.get(entry.start) || 0) + 1);
+      }
+      queue.push(entry);
     }
-    return Math.max(0, count);
+
+    function remainingAfterCandidate(entry) {
+      if (remainingConnections.has(entry)) {
+        return remainingConnections.get(entry);
+      }
+      let remaining = connectionFollowerCounts.get(entry) || 0;
+      if (entry !== candidate && (entry.allowedAfter || []).includes(candidate.start)) {
+        remaining -= 1;
+      }
+      remaining = Math.max(0, remaining);
+      remainingConnections.set(entry, remaining);
+      return remaining;
+    }
+
+    for (const predecessor of seedPredecessors) {
+      if (predecessor === candidate || contextStates.has(predecessor)) {
+        continue;
+      }
+      remainingConnections.set(predecessor, 0);
+      const availableFollowerCount = Math.max(0, predecessor.followerCount - 1);
+      mark(
+        predecessor,
+        availableFollowerCount === 0 ? CONTEXT_ONE_SHOT : CONTEXT_ALTERNATIVE
+      );
+    }
+
+    for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+      const changedEntry = queue[queueIndex];
+      const changedCategory = contextStates.get(changedEntry);
+      const changedIsWinning =
+        changedCategory === CONTEXT_ONE_SHOT || changedCategory === CONTEXT_ALTERNATIVE;
+      for (const predecessor of reverseConnectionsByStart.get(changedEntry.start) || []) {
+        if (
+          predecessor === candidate ||
+          predecessor === changedEntry ||
+          contextStates.has(predecessor)
+        ) {
+          continue;
+        }
+        if (changedIsWinning) {
+          mark(predecessor, CONTEXT_BLUNDER);
+          continue;
+        }
+
+        const remaining = Math.max(0, remainingAfterCandidate(predecessor) - 1);
+        remainingConnections.set(predecessor, remaining);
+        if (remaining === 0) {
+          mark(
+            predecessor,
+            hasWinningFollower(predecessor) ? CONTEXT_BLUNDER : CONTEXT_ALTERNATIVE
+          );
+        }
+      }
+    }
+
+    const contextOneShotEntries = [];
+    const contextAlternativeEntries = [];
+    let availableFollowerCount = 0;
+    let hasWinningReply = false;
+    let allRepliesAreBlunders = true;
+    const seen = new Set();
+    for (const start of candidate.allowedAfter || []) {
+      for (const reply of byStart.get(start) || []) {
+        if (reply === candidate || seen.has(reply.key)) {
+          continue;
+        }
+        seen.add(reply.key);
+        availableFollowerCount += 1;
+        const contextualCategory = contextStates.get(reply);
+        const isOneShot = reply.oneShot || contextualCategory === CONTEXT_ONE_SHOT;
+        const isAlternative =
+          reply.alternativeOneShot || contextualCategory === CONTEXT_ALTERNATIVE;
+        const isBlunder = reply.blunder || contextualCategory === CONTEXT_BLUNDER;
+        if (isOneShot || isAlternative) {
+          hasWinningReply = true;
+          allRepliesAreBlunders = false;
+          if (contextualCategory === CONTEXT_ONE_SHOT && connectionSet.has(reply)) {
+            contextOneShotEntries.push(reply);
+          } else if (contextualCategory === CONTEXT_ALTERNATIVE && connectionSet.has(reply)) {
+            contextAlternativeEntries.push(reply);
+          }
+        } else if (!isBlunder) {
+          allRepliesAreBlunders = false;
+        }
+      }
+    }
+
+    let category = "connection";
+    if (availableFollowerCount === 0) {
+      category = "oneShot";
+    } else if (hasWinningReply) {
+      category = "blunder";
+    } else if (allRepliesAreBlunders) {
+      category = "alternativeOneShot";
+    }
+    if (category === "connection") {
+      return null;
+    }
+
+    contextOneShotEntries.sort(compareReading);
+    contextAlternativeEntries.sort(compareReading);
+    return {
+      entry: candidate,
+      category,
+      contextOneShotReplyWords: contextOneShotEntries.map((entry) => entry.word),
+      contextAlternativeOneShotReplyWords: contextAlternativeEntries.map((entry) => entry.word)
+    };
   }
 
   function refreshDictionaryIndexes(dictionary, started) {
@@ -851,12 +1061,14 @@
         entry.allowedAfter = getAllowedStartSyllables(entry.end);
       }
       entry.followerCount = countByAllowedStarts(entry, startCounts, true);
-      entry.oneShot = entry.followerCount === 0;
+      const forcedAlternative = isForcedAlternativeEntry(entry);
+      entry.oneShot = !forcedAlternative && entry.followerCount === 0;
       entry.oneShotReplyCount = 0;
       entry.alternativeOneShotReplyCount = 0;
-      entry.returnTrapReplyCount = 0;
+      entry.contextOneShotReplyWords = [];
+      entry.contextAlternativeOneShotReplyWords = [];
       entry.killableFollowerCount = 0;
-      entry.alternativeOneShot = false;
+      entry.alternativeOneShot = forcedAlternative;
       entry.blunder = false;
       if (entry.oneShot) {
         oneShot += 1;
@@ -872,11 +1084,9 @@
     const oneShotCounterStartCounts = createOneShotCounterStartCounts(entries);
     const killableStartCounts = new Map();
     for (const entry of entries) {
-      entry.oneShotReplyCount = countOneShotCounters(
-        entry,
-        oneShotStartCounts,
-        oneShotCounterStartCounts
-      );
+      entry.oneShotReplyCount = isForcedAlternativeEntry(entry)
+        ? 0
+        : countOneShotCounters(entry, oneShotStartCounts, oneShotCounterStartCounts);
     }
 
     let changed = true;
@@ -933,66 +1143,23 @@
       }
     }
 
-    const returnTrapCounterStartCounts = createReturnTrapCounterStartCounts(entries);
-    const activatedReturnTrapPairs = new Set();
-    for (const entry of entries) {
-      if (entry.oneShot || entry.alternativeOneShot || entry.blunder) {
-        continue;
-      }
-      const returnTrapReplyCount = countReturnTrapCounters(entry, returnTrapCounterStartCounts);
-      if (returnTrapReplyCount > 0) {
-        entry.returnTrapReplyCount = returnTrapReplyCount;
-        entry.blunder = true;
-        for (const replyStart of entry.allowedAfter || []) {
-          const countsByPlayedStart = returnTrapCounterStartCounts.get(replyStart);
-          if (countsByPlayedStart && countsByPlayedStart.has(entry.start)) {
-            activatedReturnTrapPairs.add(`${replyStart}\u0000${entry.start}`);
-          }
-        }
-      }
-    }
+    applyContextualConnectionClassification(entries, byStart);
 
-    // Promote only the direct return target. A broad second fixed-point pass
-    // would reclassify unrelated chains throughout the dictionary.
-    if (activatedReturnTrapPairs.size) {
-      for (const entry of entries) {
-        if (
-          entry.oneShot ||
-          entry.alternativeOneShot ||
-          entry.blunder ||
-          entry.followerCount <= 1 ||
-          entry.followerCount !== entry.killableFollowerCount + 1
-        ) {
-          continue;
-        }
-        if ((entry.allowedAfter || []).some((start) => activatedReturnTrapPairs.has(`${entry.start}\u0000${start}`))) {
-          entry.alternativeOneShot = true;
-        }
-      }
-    }
-
-    const alternativeOneShotStartCounts = countStarts(entries, (entry) => entry.alternativeOneShot);
     killableStartCounts.clear();
+    oneShot = 0;
+    alternativeOneShot = 0;
     for (const entry of entries) {
-      if (isForcedAlternativeEntry(entry)) {
-        entry.oneShot = false;
-        entry.alternativeOneShot = true;
-        entry.blunder = false;
-        entry.oneShotReplyCount = 0;
-      }
       if (entry.blunder) {
         killableStartCounts.set(entry.start, (killableStartCounts.get(entry.start) || 0) + 1);
+      }
+      if (entry.oneShot) {
+        oneShot += 1;
       }
       if (entry.alternativeOneShot) {
         alternativeOneShot += 1;
       }
     }
     for (const entry of entries) {
-      entry.alternativeOneShotReplyCount = countByAllowedStarts(
-        entry,
-        alternativeOneShotStartCounts,
-        entry.alternativeOneShot
-      ) + (entry.returnTrapReplyCount || 0);
       entry.killableFollowerCount = countByAllowedStarts(entry, killableStartCounts, entry.blunder);
     }
 
@@ -1677,11 +1844,38 @@
     return Boolean(entry && entry.alternativeOneShot);
   }
 
+  function mergeCounterReplyWords(primaryWords, contextualWords) {
+    const words = [];
+    const seen = new Set();
+    for (const word of (primaryWords || []).concat(contextualWords || [])) {
+      const value = String(word || "");
+      const key = normalizeWordId(value);
+      if (!value || !key || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      words.push(value);
+    }
+    return words.slice(0, MAX_COUNTER_REPLY_WORDS);
+  }
+
   function createSearchResultEntry(dictionary, entry, options) {
+    const oneShotReplyWords = getOneShotReplyWords(dictionary, entry, options);
+    const alternativeOneShotReplyWords = getAlternativeOneShotReplyWords(
+      dictionary,
+      entry,
+      options
+    );
     return {
       ...entry,
-      oneShotReplyWords: getOneShotReplyWords(dictionary, entry, options),
-      alternativeOneShotReplyWords: getAlternativeOneShotReplyWords(dictionary, entry, options)
+      oneShotReplyWords: mergeCounterReplyWords(
+        oneShotReplyWords,
+        entry.contextOneShotReplyWords
+      ),
+      alternativeOneShotReplyWords: mergeCounterReplyWords(
+        alternativeOneShotReplyWords,
+        entry.contextAlternativeOneShotReplyWords
+      )
     };
   }
 
@@ -2244,7 +2438,20 @@ function initApp(core) {
     }
 
     if (message.type === "searchResult") {
-      if (message.id !== state.searchRequestId) {
+      const messageId = getWorkerMessageRequestId(message);
+      if (!messageId) {
+        if (state.searchInFlight) {
+          state.searchMetrics.failed += 1;
+          handleRecoverableSearchError("검색 엔진 응답을 처리하지 못했습니다.", {
+            retry: true,
+            devDetails: message
+          });
+        } else {
+          state.searchMetrics.ignored += 1;
+        }
+        return;
+      }
+      if (messageId !== state.searchRequestId) {
         state.searchMetrics.ignored += 1;
         return;
       }
@@ -2377,6 +2584,11 @@ function initApp(core) {
       return null;
     }
     return data;
+  }
+
+  function getWorkerMessageRequestId(message) {
+    const id = Math.floor(Number(message && message.id));
+    return Number.isFinite(id) && id > 0 ? id : 0;
   }
 
   function logPayloadWarnings(warnings, message) {
@@ -5627,6 +5839,8 @@ function initApp(core) {
 
   function renderError(text, options) {
     clearVirtualResults();
+    state.page = 1;
+    elements.resultMeta.textContent = "검색 오류";
     renderEmpty("", {
       tone: "error",
       renderBody(body) {
