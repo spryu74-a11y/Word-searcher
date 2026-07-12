@@ -10,7 +10,7 @@
       as="font"
       type="font/woff"
     />
-    <link rel="stylesheet" href="./styles.css?v=search-index-v2-20260620-r4" />
+    <link rel="stylesheet" href="./styles.css?v=start-end-filter-20260712" />
   </head>
   <body>
     <div class="discord-shell">
@@ -117,20 +117,39 @@
             <span>허용 시작</span>
             <strong id="allowedPreview">-</strong>
           </div>
+          <div>
+            <span>끝 조건</span>
+            <strong id="endPreview">-</strong>
+          </div>
         </section>
 
         <footer class="composer">
-          <label class="composer-input" for="queryInput">
-            <input
-              id="queryInput"
-              type="search"
-              autocomplete="off"
-              autocapitalize="off"
-              enterkeyhint="search"
-              spellcheck="false"
-              placeholder="검색..."
-            />
-          </label>
+          <div class="composer-fields">
+            <label class="composer-input" for="queryInput">
+              <input
+                id="queryInput"
+                type="search"
+                autocomplete="off"
+                autocapitalize="off"
+                enterkeyhint="search"
+                spellcheck="false"
+                aria-label="시작 글자"
+                placeholder="시작 글자"
+              />
+            </label>
+            <label class="composer-input" for="endQueryInput">
+              <input
+                id="endQueryInput"
+                type="search"
+                autocomplete="off"
+                autocapitalize="off"
+                enterkeyhint="search"
+                spellcheck="false"
+                aria-label="끝 글자 (선택)"
+                placeholder="끝 글자 (선택)"
+              />
+            </label>
+          </div>
 
           <label class="check-pill one-shot-filter">
             <input id="oneShotOnly" type="checkbox" />
@@ -234,6 +253,6 @@
       <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener">CC BY-SA 2.0</a>
     </footer>
 
-    <script src="./app.js?v=search-index-v2-20260620-r4"></script>
+    <script src="./app.js?v=start-end-filter-20260712"></script>
   </body>
 </html>

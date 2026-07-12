@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 
@@ -21,6 +22,10 @@ RIEUL = 5
 IEUNG = 11
 IOTIZED_VOWELS = {2, 3, 6, 7, 12, 17, 20}
 FORCED_ALTERNATIVE_ENDINGS = {"값"}
+
+
+def is_forced_alternative(entry: dict[str, object]) -> bool:
+    return entry["language"] == "k" and entry["end"] in FORCED_ALTERNATIVE_ENDINGS
 
 
 def is_hangul_syllable(value: str) -> bool:
@@ -139,13 +144,40 @@ def create_one_shot_counter_start_counts(
     """Index replies that become one-shot once the played word is removed."""
     counts_by_reply_start: dict[str, dict[str, int]] = {}
     for reply in entries:
-        if reply["followerCount"] != 1:
+        if is_forced_alternative(reply) or reply["followerCount"] != 1:
             continue
         reply_start = str(reply["start"])
         counts_by_played_start = counts_by_reply_start.setdefault(reply_start, {})
         for played_start in reply["allowed"]:  # type: ignore[index]
             counts_by_played_start[played_start] = counts_by_played_start.get(played_start, 0) + 1
     return counts_by_reply_start
+
+
+def create_one_shot_context_reply_indices(
+    entries: list[dict[str, object]],
+) -> dict[str, dict[str, list[int]]]:
+    """Index replies that become one-shot only after the played word is removed."""
+    indices_by_reply_start: dict[str, dict[str, list[int]]] = {}
+    for index, reply in enumerate(entries):
+        if is_forced_alternative(reply) or reply["followerCount"] != 1:
+            continue
+        by_played_start = indices_by_reply_start.setdefault(str(reply["start"]), {})
+        for played_start in reply["allowed"]:  # type: ignore[index]
+            by_played_start.setdefault(played_start, []).append(index)
+    return indices_by_reply_start
+
+
+def get_one_shot_context_reply_indices(
+    index: int,
+    entry: dict[str, object],
+    indices_by_reply_start: dict[str, dict[str, list[int]]],
+) -> set[int]:
+    result: set[int] = set()
+    entry_start = str(entry["start"])
+    for reply_start in entry["allowed"]:  # type: ignore[index]
+        result.update(indices_by_reply_start.get(reply_start, {}).get(entry_start, ()))
+    result.discard(index)
+    return result
 
 
 def count_one_shot_counters(
@@ -161,82 +193,23 @@ def count_one_shot_counters(
     # A word cannot be its own reply. Both source counts include that entry
     # when it starts with one of its own allowed continuation syllables.
     if entry["followerCount"] == 1 and entry_start in entry["allowed"]:  # type: ignore[operator]
-        count -= 1
+        if not is_forced_alternative(entry):
+            count -= 1
     return max(0, count)
 
 
-def create_return_trap_counter_start_counts(
-    entries: list[dict[str, object]],
-) -> dict[str, dict[str, int]]:
-    """Index replies whose one safe follow-up is the just-played word."""
-    counts_by_reply_start: dict[str, dict[str, int]] = {}
-    for reply in entries:
-        follower_count = int(reply["followerCount"])
-        if follower_count <= 1 or follower_count != int(reply["killableFollowerCount"]) + 1:
-            continue
-        counts_by_played_start = counts_by_reply_start.setdefault(str(reply["start"]), {})
-        for played_start in reply["allowed"]:  # type: ignore[index]
-            counts_by_played_start[played_start] = counts_by_played_start.get(played_start, 0) + 1
-    return counts_by_reply_start
-
-
-def count_return_trap_counters(
-    entry: dict[str, object],
-    counter_start_counts: dict[str, dict[str, int]],
-) -> int:
-    entry_start = str(entry["start"])
-    count = sum(
-        counter_start_counts.get(reply_start, {}).get(entry_start, 0)
-        for reply_start in entry["allowed"]  # type: ignore[index]
-    )
-    if (
-        entry["followerCount"] > 1
-        and entry["followerCount"] == entry["killableFollowerCount"] + 1
-        and entry_start in entry["allowed"]  # type: ignore[operator]
-    ):
-        count -= 1
-    return max(0, count)
-
-
-def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str, int]:
-    start_counts = count_starts(entries, lambda _entry: True)
-    one_shot_start_counts: dict[str, int] = {}
-    ko = 0
-    en = 0
-
-    for entry in entries:
-        follower_count = count_by_allowed(entry, start_counts, True)
-        entry["followerCount"] = follower_count
-        entry["oneShot"] = follower_count == 0
-        entry["oneShotReplyCount"] = 0
-        entry["alternativeOneShotReplyCount"] = 0
-        entry["returnTrapReplyCount"] = 0
-        entry["killableFollowerCount"] = 0
-        entry["alternativeOneShot"] = False
-        entry["blunder"] = False
-        if entry["oneShot"]:
-            start = entry["start"]  # type: ignore[assignment]
-            one_shot_start_counts[start] = one_shot_start_counts.get(start, 0) + 1
-        if entry["language"] == "k":
-            ko += 1
-        else:
-            en += 1
-
-    one_shot_counter_start_counts = create_one_shot_counter_start_counts(entries)
-    for entry in entries:
-        entry["oneShotReplyCount"] = count_one_shot_counters(
-            entry,
-            one_shot_start_counts,
-            one_shot_counter_start_counts,
-        )
-
+def propagate_static_categories(entries: list[dict[str, object]]) -> int:
+    """Propagate context-free blunder and alternative-one-shot categories."""
     changed = True
     passes = 0
     while changed:
         changed = False
         passes += 1
 
-        alternative_start_counts = count_starts(entries, lambda entry: bool(entry["alternativeOneShot"]))
+        alternative_start_counts = count_starts(
+            entries,
+            lambda entry: bool(entry["alternativeOneShot"]),
+        )
         for entry in entries:
             entry["alternativeOneShotReplyCount"] = count_by_allowed(
                 entry,
@@ -268,59 +241,267 @@ def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str
             ):
                 entry["alternativeOneShot"] = True
                 changed = True
+    return passes
 
-    return_trap_counter_start_counts = create_return_trap_counter_start_counts(entries)
-    activated_return_trap_pairs: set[tuple[str, str]] = set()
-    for entry in entries:
-        if entry["oneShot"] or entry["alternativeOneShot"] or entry["blunder"]:
+
+def find_context_counter_replies(
+    entries: list[dict[str, object]],
+) -> dict[int, tuple[set[int], set[int]]]:
+    """Find counters created by removing one currently playable connection.
+
+    Only a connection that is another connection's sole connection follower can
+    start a cascade.  Each candidate is therefore sparse: removing it updates
+    predecessors through a reverse queue, alternating between contextual
+    alternatives and blunders until the affected component stabilizes.
+    """
+    connection_indices = [
+        index
+        for index, entry in enumerate(entries)
+        if not entry["oneShot"] and not entry["alternativeOneShot"] and not entry["blunder"]
+    ]
+    if not connection_indices:
+        return {}
+
+    connection_by_start: dict[str, list[int]] = defaultdict(list)
+    reverse_by_allowed_start: dict[str, list[int]] = defaultdict(list)
+    for index in connection_indices:
+        entry = entries[index]
+        connection_by_start[str(entry["start"])].append(index)
+        for allowed_start in entry["allowed"]:  # type: ignore[index]
+            reverse_by_allowed_start[allowed_start].append(index)
+
+    connection_start_counts = {
+        start: len(indices) for start, indices in connection_by_start.items()
+    }
+    connection_follower_counts: dict[int, int] = {}
+    candidate_indices: set[int] = set()
+    for index in connection_indices:
+        entry = entries[index]
+        follower_count = count_by_allowed(entry, connection_start_counts, True)
+        connection_follower_counts[index] = follower_count
+        if follower_count != 1:
             continue
-        return_trap_reply_count = count_return_trap_counters(entry, return_trap_counter_start_counts)
-        if return_trap_reply_count:
-            entry["returnTrapReplyCount"] = return_trap_reply_count
-            entry["blunder"] = True
-            entry_start = str(entry["start"])
-            for reply_start in entry["allowed"]:  # type: ignore[index]
-                if entry_start in return_trap_counter_start_counts.get(reply_start, {}):
-                    activated_return_trap_pairs.add((reply_start, entry_start))
+        for allowed_start in entry["allowed"]:  # type: ignore[index]
+            unique_reply = next(
+                (
+                    reply_index
+                    for reply_index in connection_by_start.get(allowed_start, ())
+                    if reply_index != index
+                ),
+                None,
+            )
+            if unique_reply is not None:
+                candidate_indices.add(unique_reply)
+                break
 
-    # Promote only the direct return target. A broad second fixed-point pass
-    # would reclassify unrelated chains throughout the dictionary.
-    if activated_return_trap_pairs:
-        for entry in entries:
-            follower_count = int(entry["followerCount"])
-            if (
-                entry["oneShot"]
-                or entry["alternativeOneShot"]
-                or entry["blunder"]
-                or follower_count <= 1
-                or follower_count != int(entry["killableFollowerCount"]) + 1
-            ):
-                continue
-            entry_start = str(entry["start"])
-            if any((entry_start, start) in activated_return_trap_pairs for start in entry["allowed"]):  # type: ignore[index]
-                entry["alternativeOneShot"] = True
+    unavailable = 0
+    contextual_blunder = 1
+    contextual_one_shot = 2
+    contextual_alternative = 3
+    results: dict[int, tuple[set[int], set[int]]] = {}
+
+    for candidate_index in candidate_indices:
+        candidate = entries[candidate_index]
+        candidate_start = str(candidate["start"])
+        remaining_connection_counts: dict[int, int] = {}
+        contextual_states: dict[int, int] = {candidate_index: unavailable}
+        queue: deque[tuple[int, int]] = deque(((candidate_index, unavailable),))
+
+        while queue:
+            changed_index, changed_state = queue.popleft()
+            changed_start = str(entries[changed_index]["start"])
+            for predecessor_index in reverse_by_allowed_start.get(changed_start, ()):
+                if (
+                    predecessor_index == changed_index
+                    or predecessor_index == candidate_index
+                    or predecessor_index in contextual_states
+                ):
+                    continue
+
+                remaining = (
+                    remaining_connection_counts.get(
+                        predecessor_index,
+                        connection_follower_counts[predecessor_index],
+                    )
+                    - 1
+                )
+                remaining_connection_counts[predecessor_index] = remaining
+
+                if changed_state in (contextual_one_shot, contextual_alternative):
+                    next_state = contextual_blunder
+                elif remaining == 0:
+                    predecessor = entries[predecessor_index]
+                    candidate_was_follower = (
+                        candidate_index != predecessor_index
+                        and candidate_start in predecessor["allowed"]  # type: ignore[operator]
+                    )
+                    available_follower_count = int(predecessor["followerCount"]) - int(
+                        candidate_was_follower
+                    )
+                    next_state = (
+                        contextual_one_shot
+                        if available_follower_count == 0
+                        else contextual_alternative
+                    )
+                else:
+                    continue
+
+                contextual_states[predecessor_index] = next_state
+                queue.append((predecessor_index, next_state))
+
+        one_shot_replies: set[int] = set()
+        alternative_replies: set[int] = set()
+        for reply_start in candidate["allowed"]:  # type: ignore[index]
+            for reply_index in connection_by_start.get(reply_start, ()):
+                if reply_index == candidate_index:
+                    continue
+                reply_state = contextual_states.get(reply_index)
+                if reply_state == contextual_one_shot:
+                    one_shot_replies.add(reply_index)
+                elif reply_state == contextual_alternative:
+                    alternative_replies.add(reply_index)
+
+        if one_shot_replies or alternative_replies:
+            results[candidate_index] = (one_shot_replies, alternative_replies)
+
+    return results
+
+
+def classify_entries(entries: list[dict[str, object]], invalid: int) -> dict[str, int]:
+    start_counts = count_starts(entries, lambda _entry: True)
+    one_shot_start_counts: dict[str, int] = {}
+    ko = 0
+    en = 0
+
+    for entry in entries:
+        follower_count = count_by_allowed(entry, start_counts, True)
+        forced_alternative = is_forced_alternative(entry)
+        entry["followerCount"] = follower_count
+        entry["oneShot"] = not forced_alternative and follower_count == 0
+        entry["oneShotReplyCount"] = 0
+        entry["alternativeOneShotReplyCount"] = 0
+        entry["killableFollowerCount"] = 0
+        entry["alternativeOneShot"] = forced_alternative
+        entry["blunder"] = False
+        entry["_contextOneShotReplyIndices"] = set()
+        entry["_contextAlternativeOneShotReplyIndices"] = set()
+        entry["contextOneShotReplyWords"] = []
+        entry["contextAlternativeOneShotReplyWords"] = []
+        if entry["oneShot"]:
+            start = entry["start"]  # type: ignore[assignment]
+            one_shot_start_counts[start] = one_shot_start_counts.get(start, 0) + 1
+        if entry["language"] == "k":
+            ko += 1
+        else:
+            en += 1
+
+    one_shot_counter_start_counts = create_one_shot_counter_start_counts(entries)
+    one_shot_context_reply_indices = create_one_shot_context_reply_indices(entries)
+    for index, entry in enumerate(entries):
+        context_indices = get_one_shot_context_reply_indices(
+            index,
+            entry,
+            one_shot_context_reply_indices,
+        )
+        entry["_contextOneShotReplyIndices"] = context_indices
+        entry["oneShotReplyCount"] = count_one_shot_counters(
+            entry,
+            one_shot_start_counts,
+            one_shot_counter_start_counts,
+        )
+
+    passes = propagate_static_categories(entries)
+
+    # Removing a played connection can collapse a longer safe cycle.  Record
+    # the reply's contextual category, promote only the played candidate to a
+    # blunder, then let the ordinary context-free fixed point absorb the newly
+    # established blunder before looking for another affected component.
+    while True:
+        contextual_counters = find_context_counter_replies(entries)
+        if not contextual_counters:
+            break
+        for index, (one_shot_replies, alternative_replies) in contextual_counters.items():
+            entry = entries[index]
+            entry["_contextOneShotReplyIndices"].update(one_shot_replies)  # type: ignore[union-attr]
+            entry["_contextAlternativeOneShotReplyIndices"].update(  # type: ignore[union-attr]
+                alternative_replies
+            )
+            entry["blunder"] = True
+        passes += propagate_static_categories(entries)
 
     alternative_start_counts = count_starts(entries, lambda entry: bool(entry["alternativeOneShot"]))
     killable_start_counts = count_starts(entries, lambda entry: bool(entry["blunder"]))
+    final_one_shot_start_counts = count_starts(entries, lambda entry: bool(entry["oneShot"]))
     one_shot = 0
     alternative = 0
 
-    for entry in entries:
-        if entry["language"] == "k" and entry["end"] in FORCED_ALTERNATIVE_ENDINGS:
-            entry["oneShot"] = False
-            entry["alternativeOneShot"] = True
-            entry["blunder"] = False
-            entry["oneShotReplyCount"] = 0
-        entry["alternativeOneShotReplyCount"] = count_by_allowed(
+    for index, entry in enumerate(entries):
+        context_one_shot_indices: set[int] = entry["_contextOneShotReplyIndices"]  # type: ignore[assignment]
+        context_alternative_indices: set[int] = entry[  # type: ignore[assignment]
+            "_contextAlternativeOneShotReplyIndices"
+        ]
+        context_alternative_indices.difference_update(context_one_shot_indices)
+
+        one_shot_reply_count = count_by_allowed(
+            entry,
+            final_one_shot_start_counts,
+            bool(entry["oneShot"]),
+        )
+        alternative_reply_count = count_by_allowed(
             entry,
             alternative_start_counts,
             bool(entry["alternativeOneShot"]),
-        ) + entry["returnTrapReplyCount"]
+        )
+
+        # Contextual categories override the reply's context-free category for
+        # this played word.  Adjust rather than add blindly so a later fixed
+        # point promotion cannot double-count the same counter.
+        for reply_index in context_one_shot_indices:
+            if reply_index == index:
+                continue
+            reply = entries[reply_index]
+            if not reply["oneShot"]:
+                one_shot_reply_count += 1
+            if reply["alternativeOneShot"]:
+                alternative_reply_count -= 1
+        for reply_index in context_alternative_indices:
+            if reply_index == index:
+                continue
+            reply = entries[reply_index]
+            if reply["oneShot"]:
+                one_shot_reply_count -= 1
+            if not reply["alternativeOneShot"]:
+                alternative_reply_count += 1
+
+        entry["oneShotReplyCount"] = max(0, one_shot_reply_count)
+        entry["alternativeOneShotReplyCount"] = max(0, alternative_reply_count)
         entry["killableFollowerCount"] = count_by_allowed(
             entry,
             killable_start_counts,
             bool(entry["blunder"]),
         )
+        entry["contextOneShotReplyWords"] = [
+            str(entries[reply_index]["word"])
+            for reply_index in sorted(
+                context_one_shot_indices,
+                key=lambda reply_index: (
+                    str(entries[reply_index]["reading"]),
+                    str(entries[reply_index]["word"]),
+                ),
+            )
+            if reply_index != index
+        ]
+        entry["contextAlternativeOneShotReplyWords"] = [
+            str(entries[reply_index]["word"])
+            for reply_index in sorted(
+                context_alternative_indices,
+                key=lambda reply_index: (
+                    str(entries[reply_index]["reading"]),
+                    str(entries[reply_index]["word"]),
+                ),
+            )
+            if reply_index != index
+        ]
         if entry["oneShot"]:
             one_shot += 1
         if entry["alternativeOneShot"]:
@@ -359,21 +540,24 @@ def build_index() -> None:
             category = 2
         elif entry["blunder"]:
             category = 3
-        packed_entries.append(
-            [
-                entry["word"],
-                entry["reading"],
-                entry["language"],
-                entry["followerCount"],
-                entry["oneShotReplyCount"],
-                entry["alternativeOneShotReplyCount"],
-                category,
-                entry["start"],
-                entry["end"],
-                entry["allowed"],
-                entry["key"],
-            ]
-        )
+        packed_entry = [
+            entry["word"],
+            entry["reading"],
+            entry["language"],
+            entry["followerCount"],
+            entry["oneShotReplyCount"],
+            entry["alternativeOneShotReplyCount"],
+            category,
+            entry["start"],
+            entry["end"],
+            entry["allowed"],
+            entry["key"],
+        ]
+        context_one_shot_words = entry["contextOneShotReplyWords"]
+        context_alternative_words = entry["contextAlternativeOneShotReplyWords"]
+        if context_one_shot_words or context_alternative_words:
+            packed_entry.append([context_one_shot_words, context_alternative_words])
+        packed_entries.append(packed_entry)
 
     # A two-or-more syllable query can binary-search this order rather than
     # filtering every word in the first-syllable bucket.

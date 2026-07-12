@@ -1295,7 +1295,10 @@
   function normalizeSearchPayload(payload, options) {
     const opts = options && typeof options === "object" ? options : {};
     const sourceMode = opts.sourceMode === "reply" ? "reply" : "starts";
-    const fallbackQueryInfo = getQueryInfo(opts.query || "", sourceMode);
+    const fallbackQueryInfo = {
+      ...getQueryInfo(opts.query || "", sourceMode),
+      endReading: toReading(opts.endQuery || "")
+    };
     const warnings = [];
     const raw = payload && typeof payload === "object" ? payload : {};
 
@@ -1337,9 +1340,11 @@
     const starts = normalizeSyllableList(raw.starts);
     const prefixes = normalizePrefixList(raw.prefixes);
     const display = String(raw.display || fallback.display || "-");
+    const endReading = cleanHangul(raw.endReading) || fallback.endReading || "";
 
     return {
       reading,
+      endReading,
       prefixes: prefixes.length ? prefixes : fallback.prefixes || [],
       starts: starts.length ? starts : fallback.starts || [],
       display: display || (sourceMode === "reply" ? getLastSyllable(reading) : reading) || "-"
@@ -1526,6 +1531,9 @@
     const safeConnections = [];
     let total = 0;
     for (const entry of candidates) {
+      if (options.endReading && !entry.reading.endsWith(options.endReading)) {
+        continue;
+      }
       const resultEntry = getSearchEntryState(dictionary, entry, options);
       total += 1;
       if (resultEntry.oneShot) {
@@ -2052,7 +2060,11 @@
     const started = now();
     const pageSize = Number(options.pageSize || options.limit || DEFAULT_LIMIT);
     const page = Number(options.page || 1);
-    const queryInfo = getQueryInfo(options.query, options.sourceMode);
+    const endReading = toReading(options.endQuery || "");
+    const queryInfo = {
+      ...getQueryInfo(options.query, options.sourceMode),
+      endReading
+    };
     const exactWord = String(options.query || "").trim().replace(/\s+/g, "").toLowerCase();
     const exactReading = queryInfo.reading;
     const oneShotOnly = Boolean(options.oneShotOnly);
@@ -2064,6 +2076,7 @@
       page,
       exactWord,
       exactReading,
+      endReading,
       usedKeySet,
       usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
     };
@@ -2119,6 +2132,11 @@
   }
 
   function matchesLookupEntry(entry, lookup) {
+    const endReading = toReading((lookup && lookup.endReading) || "");
+    if (endReading && !entry.reading.endsWith(endReading)) {
+      return false;
+    }
+
     const exactKey = String((lookup && lookup.exactWord) || "").trim().replace(/\s+/g, "").toLowerCase();
     if (exactKey && entry.key === exactKey) {
       return true;
@@ -2257,6 +2275,8 @@ function initApp(core) {
     defaultSourceMeta: document.getElementById("defaultSourceMeta"),
     dictionaryPanel: document.getElementById("dictionaryPanel"),
     dictionaryState: document.getElementById("dictionaryState"),
+    endPreview: document.getElementById("endPreview"),
+    endQueryInput: document.getElementById("endQueryInput"),
     fileInput: document.getElementById("fileInput"),
     fileState: document.getElementById("fileState"),
     guildSearch: document.getElementById("guildSearch"),
@@ -2342,6 +2362,7 @@ function initApp(core) {
     searchBusy: false,
     isComposing: false,
     observedQuery: "",
+    observedEndQuery: "",
     searchMetrics: {
       inputEvents: 0,
       started: 0,
@@ -2473,6 +2494,7 @@ function initApp(core) {
       state.pendingSearch = false;
       const payload = core.normalizeSearchPayload(message.payload, {
         query: currentQuery,
+        endQuery: elements.endQueryInput.value,
         sourceMode: state.sourceMode,
         page: state.page,
         pageSize: getPageSize()
@@ -2656,6 +2678,7 @@ function initApp(core) {
       state.searchMetrics.inputEvents += 1;
     }
     state.observedQuery = elements.queryInput.value;
+    state.observedEndQuery = elements.endQueryInput.value;
     scheduleSearch(delay, true);
   }
 
@@ -2741,6 +2764,59 @@ function initApp(core) {
     const currentSignature = currentQuery ? getSearchSignature(currentQuery) : "";
     if (
       currentValue !== state.observedQuery ||
+      (currentSignature && currentSignature !== state.lastRenderedSearchSignature && !state.pendingSearch)
+    ) {
+      requestInputSearch(SEARCH_DEBOUNCE_MS, false);
+    }
+  });
+  addSearchEventListener(elements.endQueryInput, "compositionstart", () => {
+    state.isComposing = true;
+    state.observedEndQuery = elements.endQueryInput.value;
+  });
+  addSearchEventListener(elements.endQueryInput, "compositionend", () => {
+    state.isComposing = false;
+    requestInputSearch(0, true);
+  });
+  addSearchEventListener(elements.endQueryInput, "blur", () => {
+    requestInputSearch(0, false);
+  });
+  addSearchEventListener(elements.endQueryInput, "input", () => {
+    if (state.isComposing) {
+      state.observedEndQuery = elements.endQueryInput.value;
+      return;
+    }
+    requestInputSearch(SEARCH_DEBOUNCE_MS, true);
+  });
+  addSearchEventListener(elements.endQueryInput, "search", () => {
+    requestInputSearch(0, true);
+  });
+  addSearchEventListener(elements.endQueryInput, "keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+    requestInputSearch(0, false);
+    if (mobileMedia.matches) {
+      elements.endQueryInput.blur();
+    }
+  });
+  addSearchEventListener(elements.endQueryInput, "keyup", (event) => {
+    if (
+      SEARCH_KEYUP_IGNORE_KEYS.has(event.key) ||
+      event.isComposing ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    const currentValue = elements.endQueryInput.value;
+    const currentQuery = String(elements.queryInput.value || "").trim();
+    const currentSignature = currentQuery ? getSearchSignature(currentQuery) : "";
+    if (
+      currentValue !== state.observedEndQuery ||
       (currentSignature && currentSignature !== state.lastRenderedSearchSignature && !state.pendingSearch)
     ) {
       requestInputSearch(SEARCH_DEBOUNCE_MS, false);
@@ -2865,15 +2941,22 @@ function initApp(core) {
   startSearchMetricsLogger();
   window.setInterval(() => {
     const currentQuery = elements.queryInput.value;
+    const currentEndQuery = elements.endQueryInput.value;
     const currentReading = core.toReading(currentQuery);
+    const currentEndReading = core.toReading(currentEndQuery);
     const renderedReading = elements.readingPreview.textContent;
+    const renderedEndReading = elements.endPreview.textContent;
     if (
       currentQuery === state.observedQuery &&
-      (!currentReading || renderedReading === currentReading || state.pendingSearch)
+      currentEndQuery === state.observedEndQuery &&
+      (!currentReading ||
+        (renderedReading === currentReading && (!currentEndReading || renderedEndReading === currentEndReading)) ||
+        state.pendingSearch)
     ) {
       return;
     }
     state.observedQuery = currentQuery;
+    state.observedEndQuery = currentEndQuery;
     scheduleSearch(SEARCH_DEBOUNCE_MS, true);
   }, 150);
 
@@ -2937,6 +3020,7 @@ function initApp(core) {
         mode: lookup.mode,
         prefixes: lookup.prefixes,
         exactWord: lookup.exactWord,
+        endReading: lookup.endReading,
         query: lookup.query,
         oneShotOnly: lookup.oneShotOnly,
         wasEmpty: lookup.wasEmpty,
@@ -3058,9 +3142,40 @@ function initApp(core) {
   }
 
   function getSearchInputValidation() {
-    return core.validateSearchQuery(elements.queryInput.value, {
+    const queryValidation = core.validateSearchQuery(elements.queryInput.value, {
       maxLength: SEARCH_MAX_QUERY_LENGTH
     });
+    const endQuery = core.normalizeSearchQuery(elements.endQueryInput.value);
+    if (!queryValidation.ok || !endQuery) {
+      return {
+        ...queryValidation,
+        endQuery: "",
+        endReading: ""
+      };
+    }
+
+    const endValidation = core.validateSearchQuery(endQuery, {
+      maxLength: SEARCH_MAX_QUERY_LENGTH
+    });
+    if (!endValidation.ok) {
+      return {
+        ...endValidation,
+        query: queryValidation.query,
+        reading: queryValidation.reading,
+        endQuery,
+        endReading: "",
+        message:
+          endValidation.reason === "too_long"
+            ? `끝 조건은 ${SEARCH_MAX_QUERY_LENGTH}자 이하로 입력해 주세요.`
+            : "끝 조건으로 사용할 한글 또는 영문을 입력해 주세요."
+      };
+    }
+
+    return {
+      ...queryValidation,
+      endQuery: endValidation.query,
+      endReading: endValidation.reading
+    };
   }
 
   function runSearch() {
@@ -3147,6 +3262,7 @@ function initApp(core) {
       traceId,
       options: {
         query,
+        endQuery: validation.endQuery,
         sourceMode: state.sourceMode,
         oneShotOnly: elements.oneShotOnly.checked,
         usedKeys: Array.from(state.usedWordIds),
@@ -3373,6 +3489,7 @@ function initApp(core) {
   function getSearchSignature(query) {
     return [
       core.toReading(query),
+      core.toReading(elements.endQueryInput.value),
       state.sourceMode,
       elements.oneShotOnly.checked ? "1" : "0",
       String(state.usedVersion),
@@ -3631,6 +3748,7 @@ function initApp(core) {
 
   function getOnlineLookupInfo(payload, target) {
     const query = String(elements.queryInput.value || "").trim();
+    const endReading = core.toReading(elements.endQueryInput.value);
     const queryInfo = payload.queryInfo || {};
     const targetLabel = target === "oneShot" ? "한방/대체" : "연결";
     const oneShotOnly = elements.oneShotOnly.checked;
@@ -3640,6 +3758,7 @@ function initApp(core) {
         target,
         targetLabel,
         query,
+        endReading,
         oneShotOnly,
         label: "",
         prefixes: [],
@@ -3654,6 +3773,7 @@ function initApp(core) {
         target,
         targetLabel,
         query,
+        endReading,
         oneShotOnly,
         label: starts.join(", "),
         prefixes: starts,
@@ -3668,6 +3788,7 @@ function initApp(core) {
       target,
       targetLabel,
       query,
+      endReading,
       oneShotOnly,
       label: queryInfo.reading,
       prefixes,
@@ -3689,7 +3810,7 @@ function initApp(core) {
     if (!lookup || !lookup.target || !lookup.mode || !Array.isArray(lookup.prefixes)) {
       return "";
     }
-    return `${lookup.target}:${lookup.mode}:${lookup.exactWord || ""}:${lookup.prefixes.join("|")}`;
+    return `${lookup.target}:${lookup.mode}:${lookup.exactWord || ""}:${lookup.endReading || ""}:${lookup.prefixes.join("|")}`;
   }
 
   function rememberOnlineAttempt(attemptKey) {
@@ -3721,6 +3842,7 @@ function initApp(core) {
     return (
       lookup &&
       String(elements.queryInput.value || "").trim() === lookup.query &&
+      core.toReading(elements.endQueryInput.value) === String(lookup.endReading || "") &&
       state.sourceMode === lookup.mode &&
       Boolean(elements.oneShotOnly.checked) === Boolean(lookup.oneShotOnly)
     );
@@ -5325,6 +5447,7 @@ function initApp(core) {
     state.page = 1;
     elements.readingPreview.textContent = "-";
     elements.allowedPreview.textContent = "-";
+    elements.endPreview.textContent = "-";
     elements.resultMeta.textContent = "준비됨";
     elements.resultPager.hidden = true;
     updateBackToTop();
@@ -5369,6 +5492,7 @@ function initApp(core) {
     state.page = 1;
     elements.readingPreview.textContent = "-";
     elements.allowedPreview.textContent = "-";
+    elements.endPreview.textContent = "-";
     elements.resultMeta.textContent = "로딩중";
     elements.resultPager.hidden = true;
     updateBackToTop();
@@ -5400,6 +5524,7 @@ function initApp(core) {
       state.sourceMode === "reply"
         ? queryInfo.starts.join(", ") || "-"
         : queryInfo.display || "-";
+    elements.endPreview.textContent = core.toReading(elements.endQueryInput.value) || "-";
     elements.resultMeta.textContent = "검색중";
     elements.buildState.textContent = "검색중...";
     elements.resultPager.hidden = true;
@@ -5425,6 +5550,7 @@ function initApp(core) {
       state.sourceMode === "reply"
         ? payload.queryInfo.starts.join(", ") || "-"
         : payload.queryInfo.display || "-";
+    elements.endPreview.textContent = payload.queryInfo.endReading || "-";
     const firstResult = payload.total ? (payload.page - 1) * payload.pageSize + 1 : 0;
     const lastResult = Math.min(payload.total, payload.page * payload.pageSize);
     elements.resultMeta.textContent = payload.total
@@ -5830,6 +5956,7 @@ function initApp(core) {
     state.page = 1;
     elements.readingPreview.textContent = "-";
     elements.allowedPreview.textContent = "-";
+    elements.endPreview.textContent = "-";
     elements.resultMeta.textContent = "입력 확인";
     setBusy(false, "입력 확인");
     renderEmpty(validation && validation.message ? validation.message : "검색어를 확인해 주세요.", {
@@ -5908,6 +6035,8 @@ function initApp(core) {
     elements.resultList.setAttribute("aria-busy", state.appLoading || state.searchBusy ? "true" : "false");
     elements.queryInput.disabled = state.appLoading;
     elements.queryInput.setAttribute("aria-disabled", state.appLoading ? "true" : "false");
+    elements.endQueryInput.disabled = state.appLoading;
+    elements.endQueryInput.setAttribute("aria-disabled", state.appLoading ? "true" : "false");
     elements.oneShotOnly.disabled = state.appLoading;
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.disabled = state.appLoading;
@@ -5928,7 +6057,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=search-index-v2-20260620-r4", window.location.href)
+      new URL("./search-worker.js?v=start-end-filter-20260712", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

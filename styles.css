@@ -421,7 +421,7 @@ h2 {
 
 .info-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
@@ -899,6 +899,13 @@ body.app-loading .composer-input input {
   background: var(--chat);
   position: relative;
   z-index: 1;
+}
+
+.composer-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
 }
 
 .composer-input {
@@ -1536,8 +1543,8 @@ body.settings-channel .member-panel {
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
-  .composer-input {
-    grid-column: 1;
+  .composer-fields {
+    grid-column: 1 / -1;
     grid-row: 1;
     min-width: 0;
   }
@@ -1563,7 +1570,7 @@ body.settings-channel .member-panel {
 
   .send-button {
     grid-column: 2;
-    grid-row: 1;
+    grid-row: 2;
     min-width: 58px;
   }
 

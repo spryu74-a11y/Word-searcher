@@ -17,15 +17,14 @@ const ENTRY_START = 7;
 const ENTRY_END = 8;
 const ENTRY_ALLOWED_AFTER = 9;
 const ENTRY_KEY = 10;
+const ENTRY_CONTEXT_REPLY_WORDS = 11;
 const CATEGORY_CONNECTION = 0;
 const CATEGORY_ONE_SHOT = 1;
 const CATEGORY_ALTERNATIVE = 2;
 const CATEGORY_BLUNDER = 3;
 const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
-const COUNTER_WORDS_SKIP_THRESHOLD = 5000;
 const MAX_COUNTER_REPLY_WORDS = 12;
 const FORCED_ALTERNATIVE_ENDINGS = new Set(["값"]);
-const MAX_COUNTER_REPLY_BUCKET_SCAN = 1500;
 const SHARD_CACHE_MAX = 160;
 const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RESULT_CACHE_MAX = 150;
@@ -579,6 +578,11 @@ function uniqueTextLines(values) {
 }
 
 function matchesLookupEntry(entry, lookup) {
+  const endReading = toReading((lookup && lookup.endReading) || "");
+  if (endReading && !entry.reading.endsWith(endReading)) {
+    return false;
+  }
+
   const exactKey = normalizeKey((lookup && lookup.exactWord) || "");
   if (exactKey && entry.key === exactKey) {
     return true;
@@ -666,9 +670,13 @@ async function searchDictionary(options, context) {
   const pageSize = Number(options.pageSize || options.limit || DEFAULT_LIMIT);
   const page = Number(options.page || 1);
   const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
+  const endReading = toReading(options.endQuery || "");
   const parseStarted = now();
   if (!validateSearchQuery(options.query)) {
-    const queryInfo = getQueryInfo("", sourceMode);
+    const queryInfo = {
+      ...getQueryInfo("", sourceMode),
+      endReading
+    };
     return {
       queryInfo,
       ...createEmptyResults(pageSize, page),
@@ -676,7 +684,10 @@ async function searchDictionary(options, context) {
       timing: { parseMs: elapsed(parseStarted), shardMs: 0, searchMs: 0, stateMs: 0 }
     };
   }
-  const queryInfo = getQueryInfo(options.query, sourceMode);
+  const queryInfo = {
+    ...getQueryInfo(options.query, sourceMode),
+    endReading
+  };
   const exactWord = normalizeKey(options.query || "");
   const exactReading = queryInfo.reading;
   const parseMs = elapsed(parseStarted);
@@ -720,10 +731,13 @@ async function searchDictionary(options, context) {
       ? searchByReply(queryInfo.starts)
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
+  const filteredCandidates = endReading
+    ? merged.filter((index) => entryReading(index).endsWith(endReading))
+    : merged;
 
   const collected = options.legacyFullSort
     ? collectResultsLegacy(
-        merged,
+        filteredCandidates,
         Boolean(options.oneShotOnly),
         pageSize,
         page,
@@ -731,12 +745,12 @@ async function searchDictionary(options, context) {
         exactReading
       )
     : collectResults(
-    merged,
-    Boolean(options.oneShotOnly),
-    pageSize,
-    page,
-    exactWord,
-    exactReading,
+        filteredCandidates,
+        Boolean(options.oneShotOnly),
+        pageSize,
+        page,
+        exactWord,
+        exactReading,
         searchOptions
       );
   const searchMs = elapsed(t1);
@@ -757,18 +771,9 @@ async function searchDictionary(options, context) {
   const stateMs = elapsed(t3);
 
   const counterShardStarts = getCounterShardStarts(visibleStates);
-  if (shouldPrefetchCounterShards(counterShardStarts)) {
-  loadShards(counterShardStarts).catch((error) => {
-    warnWorker("반격 단어 shard 사전 로딩 실패", error);
-  });
-  }
-  // Counter-word expansion can traverse several large reply buckets per row.
-  // Classification/counts are already exact; defer only the display-only word
-  // list for broad searches so it cannot dominate keystroke latency.
-  const skipCounterWords = candidates.length > COUNTER_WORDS_SKIP_THRESHOLD;
-  const results = visibleStates.map((state) =>
-    createSearchResultEntry(state, searchOptions, skipCounterWords)
-  );
+  await loadShards(counterShardStarts, signal);
+  throwIfAborted(signal);
+  const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions));
 
   const totalMs = elapsed(started);
   const payload = {
@@ -790,7 +795,7 @@ async function searchDictionary(options, context) {
       totalMs,
       cacheHit: false,
       loadedShards: loadedShardMeta.size,
-      candidateCount: candidates.length
+      candidateCount: filteredCandidates.length
     }
   };
   if (!options.bypassCache) {
@@ -805,6 +810,7 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     runtimeVersion,
     normalizeKey(options.query || ""),
     queryInfo && queryInfo.reading ? queryInfo.reading : "",
+    queryInfo && queryInfo.endReading ? queryInfo.endReading : "",
     sourceMode,
     options.oneShotOnly ? "1" : "0",
     String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
@@ -990,19 +996,6 @@ function getCounterShardStarts(states) {
     }
   }
   return Array.from(starts);
-}
-
-function shouldPrefetchCounterShards(starts) {
-  return (starts || []).every((start) => getCandidateCountForStart(start) <= MAX_COUNTER_REPLY_BUCKET_SCAN);
-}
-
-function getCandidateCountForStart(start) {
-  const loaded = baseBuckets[start];
-  const customCount = (customByStart.get(start) || EMPTY).length || 0;
-  if (Array.isArray(loaded)) {
-    return loaded.length + customCount;
-  }
-  return (Number(shardCandidateCounts[start]) || 0) + customCount;
 }
 
 function searchByPrefixes(prefixes) {
@@ -1625,44 +1618,92 @@ function getAlternativeOneShotCounterIndices(index, options) {
   return replies;
 }
 
-function createSearchResultEntry(state, options, skipCounterWords) {
-  if (skipCounterWords) {
-    return {
-      ...state,
-      oneShotReplyWords: [],
-      alternativeOneShotReplyWords: []
-    };
-  }
-
+function createSearchResultEntry(state, options) {
+  const contextReplyWords = getContextReplyWords(state, options);
   return {
     ...state,
-    oneShotReplyWords: getCounterReplyWords(state, (entry) => entry.oneShot, options),
+    oneShotReplyWords: getCounterReplyWords(
+      state,
+      (entry) => entry.oneShot,
+      options,
+      contextReplyWords[0],
+      state.oneShotReplyCount
+    ),
     alternativeOneShotReplyWords: getCounterReplyWords(
       state,
       (entry) => entry.alternativeOneShot,
-      options
+      options,
+      contextReplyWords[1],
+      state.alternativeOneShotReplyCount
     )
   };
 }
 
-function getCounterReplyWords(state, predicate, options) {
+function getContextReplyWords(state, options) {
+  if (!state.blunder) {
+    return [[], []];
+  }
+  const entry = getPackedEntry(state.index);
+  const packedLists = entry && entry[ENTRY_CONTEXT_REPLY_WORDS];
+  if (!Array.isArray(packedLists)) {
+    return [[], []];
+  }
+  return [0, 1].map((offset) => {
+    const words = Array.isArray(packedLists[offset]) ? packedLists[offset] : EMPTY;
+    const result = [];
+    const seen = new Set();
+    for (const rawWord of words) {
+      if (result.length >= MAX_COUNTER_REPLY_WORDS) {
+        break;
+      }
+      const word = String(rawWord || "");
+      const key = normalizeKey(word);
+      if (
+        !key ||
+        key === state.key ||
+        seen.has(key) ||
+        (options.usedKeySet && options.usedKeySet.has(key))
+      ) {
+        continue;
+      }
+      seen.add(key);
+      result.push(word);
+    }
+    return result;
+  });
+}
+
+function getCounterReplyWords(state, predicate, options, contextWords, expectedCount) {
   if (!state.blunder) {
     return [];
   }
-  // This is display-only detail.  Scanning a 10k+ reply bucket to list at
-  // most 12 names is the historic outlier for words such as 값/틀.
-  for (const start of state.allowedAfter) {
-    if (getBucket(start).length > MAX_COUNTER_REPLY_BUCKET_SCAN) {
-      return [];
-    }
-  }
   const replyOptions = createPlayedOptions(options, state.index);
-  const replies = [];
+  const replyWords = [];
+  const seenWords = new Set();
+  const numericExpected = Math.max(0, Math.floor(Number(expectedCount)) || 0);
+  const replyLimit = numericExpected
+    ? Math.min(MAX_COUNTER_REPLY_WORDS, Math.max(numericExpected, (contextWords || EMPTY).length))
+    : MAX_COUNTER_REPLY_WORDS;
+  for (const rawWord of contextWords || EMPTY) {
+    if (replyWords.length >= replyLimit) {
+      break;
+    }
+    const word = String(rawWord || "");
+    const key = normalizeKey(word);
+    if (!key || seenWords.has(key)) {
+      continue;
+    }
+    seenWords.add(key);
+    replyWords.push(word);
+  }
+  if (replyWords.length >= replyLimit) {
+    return replyWords.sort((left, right) => left.localeCompare(right, "ko"));
+  }
   const seen = new Set();
   for (const start of state.allowedAfter) {
-    forEachBucketIndex(start, (replyIndex) => {
-      if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
-        return;
+    const completed = forEachBucketIndex(start, (replyIndex) => {
+      if (replyWords.length >= replyLimit) {
+        return false;
       }
       if (replyIndex === state.index || seen.has(replyIndex) || isUsedIndex(replyIndex, replyOptions)) {
         return;
@@ -1672,17 +1713,21 @@ function getCounterReplyWords(state, predicate, options) {
         return;
       }
       seen.add(replyIndex);
-      replies.push(replyState);
-      if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
-        return;
+      const word = replyState.word;
+      const key = normalizeKey(word);
+      if (key && !seenWords.has(key)) {
+        seenWords.add(key);
+        replyWords.push(word);
+      }
+      if (replyWords.length >= replyLimit) {
+        return false;
       }
     });
-    if (replies.length >= MAX_COUNTER_REPLY_WORDS) {
+    if (!completed || replyWords.length >= replyLimit) {
       break;
     }
   }
-  replies.sort(compareReading);
-  return replies.map((entry) => entry.word);
+  return replyWords.sort((left, right) => left.localeCompare(right, "ko"));
 }
 
 function createEmptyResults(pageSize, page) {
@@ -2043,15 +2088,20 @@ function forEachBucketIndex(start, callback) {
   touchShard(start);
   const base = baseBuckets[start] || EMPTY;
   for (const index of base) {
-    callback(index);
+    if (callback(index) === false) {
+      return false;
+    }
   }
   const custom = customByStart.get(start) || EMPTY;
   for (const index of custom) {
     if (baseByKey.has(entryKey(index))) {
       continue;
     }
-    callback(index);
+    if (callback(index) === false) {
+      return false;
+    }
   }
+  return true;
 }
 
 function someInBucket(start, predicate) {

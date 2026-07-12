@@ -59,9 +59,10 @@ function createClient(worker) {
   };
 }
 
-function searchOptions(query, usedKeys, usedVersion) {
+function searchOptions(query, usedKeys, usedVersion, endQuery) {
   return {
     query,
+    endQuery: endQuery || "",
     sourceMode: "starts",
     oneShotOnly: false,
     usedKeys,
@@ -87,15 +88,82 @@ async function main() {
     assert.ok(valueTable.alternativeOneShotReplyCount >= 1);
     assert.ok(standardValue && standardValue.alternativeOneShot, "표준값 must be an alternative one-shot");
 
+    const firstCounterSearch = await request("search", {
+      options: searchOptions("\uc2a8\uc7a0", [], 0)
+    });
+    const firstCounter = firstCounterSearch.payload.results.find(
+      (entry) => entry.word === "\uc2a8\uc7a0"
+    );
+    assert.ok(firstCounter && firstCounter.blunder, "슨잠 must be a blunder");
+    assert.ok(
+      firstCounter.oneShotReplyWords.includes("\uc7a0\uaf4c"),
+      "first search must include 잠꽌 as the one-shot counter"
+    );
+    assert.ok(
+      firstCounter.alternativeOneShotReplyWords.includes("\uc7a0\ubc84\ub987"),
+      "first search must include 잠버릇 as an alternative counter"
+    );
+
+    const largeCounterSearch = await request("search", {
+      options: searchOptions("\uc2a8\uac70", [], 0)
+    });
+    const largeCounter = largeCounterSearch.payload.results.find(
+      (entry) => entry.word === "\uc2a8\uac70"
+    );
+    assert.ok(largeCounter && largeCounter.blunder, "슨거 must be a blunder");
+    assert.ok(
+      largeCounter.oneShotReplyWords.includes("\uac70\uba15"),
+      "large reply buckets must still include 거먕 as the one-shot counter"
+    );
+    assert.ok(
+      largeCounter.alternativeOneShotReplyWords.length > 0,
+      "large reply buckets must include alternative counter words"
+    );
+
     const broadUsedSearch = await request("search", {
       options: searchOptions("\ud504", ["\uac12\ud45c"], 1)
     });
     assert.strictEqual(broadUsedSearch.type, "searchResult");
     assert.strictEqual(broadUsedSearch.payload.timing.followerMs, 0);
-    assert.ok(broadUsedSearch.payload.elapsedMs < 100, "used-word search must stay responsive");
+    assert.ok(
+      broadUsedSearch.payload.elapsedMs < 100,
+      `used-word search must stay responsive (${broadUsedSearch.payload.elapsedMs}ms)`
+    );
 
-    const customBuilt = await request("buildDefault", { extraText: "\ub05d\ud7a3\n\ud7a3\uc00d" });
+    const customBuilt = await request("buildDefault", {
+      extraText: "\ub05d\ud7a3\n\ub05d\uc00d\n\ub05d\ub9c8\ub098\n\ud7a3\uc00d"
+    });
     assert.strictEqual(customBuilt.type, "built");
+
+    const endHihSearch = await request("search", {
+      options: searchOptions("\ub05d", [], 0, "\ud7a3")
+    });
+    assert.ok(endHihSearch.payload.results.some((entry) => entry.word === "\ub05d\ud7a3"));
+    assert.ok(endHihSearch.payload.results.every((entry) => entry.reading.endsWith("\ud7a3")));
+    assert.strictEqual(endHihSearch.payload.queryInfo.endReading, "\ud7a3");
+
+    const endPpengSearch = await request("search", {
+      options: searchOptions("\ub05d", [], 0, "\uc00d")
+    });
+    assert.ok(endPpengSearch.payload.results.some((entry) => entry.word === "\ub05d\uc00d"));
+    assert.ok(endPpengSearch.payload.results.every((entry) => entry.reading.endsWith("\uc00d")));
+
+    const multiEndSearch = await request("search", {
+      options: searchOptions("\ub05d", [], 0, "\ub9c8\ub098")
+    });
+    assert.ok(multiEndSearch.payload.results.some((entry) => entry.word === "\ub05d\ub9c8\ub098"));
+    assert.ok(multiEndSearch.payload.results.every((entry) => entry.reading.endsWith("\ub9c8\ub098")));
+
+    const exactEndMismatchSearch = await request("search", {
+      options: searchOptions("\ub05d\ud7a3", [], 0, "\uc00d")
+    });
+    assert.ok(!exactEndMismatchSearch.payload.results.some((entry) => entry.word === "\ub05d\ud7a3"));
+
+    const cachedEndHihSearch = await request("search", {
+      options: searchOptions("\ub05d", [], 0, "\ud7a3")
+    });
+    assert.strictEqual(cachedEndHihSearch.payload.timing.cacheHit, true);
+    assert.ok(cachedEndHihSearch.payload.results.every((entry) => entry.reading.endsWith("\ud7a3")));
 
     const initial = await request("search", { options: searchOptions("\ub05d\ud7a3", [], 0) });
     const afterUsed = await request("search", {

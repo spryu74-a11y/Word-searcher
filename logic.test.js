@@ -76,6 +76,21 @@ assert.strictEqual(alternativeCounterResult.categoryCounts.connection, 0);
 assert.strictEqual(alternativeCounterResult.categoryCounts.blunder, 1);
 assert.deepStrictEqual(alternativeCounterResult.results[0].alternativeOneShotReplyWords, ["나마"]);
 
+const longReturnCycleDictionary = logic.createDictionary(
+  ["슨몽", "몽꾼", "꾼둑", "꾼둑꾼둑", "둑슨"].join("\n")
+);
+const longReturnCycleResult = logic.searchDictionary(longReturnCycleDictionary, {
+  query: "슨",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+});
+const sonmong = longReturnCycleResult.results.find((entry) => entry.word === "슨몽");
+assert.ok(sonmong);
+assert.ok(sonmong.blunder);
+assert.strictEqual(sonmong.alternativeOneShotReplyCount, 1);
+assert.deepStrictEqual(sonmong.alternativeOneShotReplyWords, ["몽꾼"]);
+
 const allBlunderFollowerDictionary = logic.createDictionary(
   ["그릇", "릇가", "가끝", "릇나", "나끝"].join("\n")
 );
@@ -195,6 +210,82 @@ const exactResult = logic.searchDictionary(exactDictionary, {
 });
 
 assert.strictEqual(exactResult.results[0].word, "가나");
+
+const startEndDictionary = logic.createDictionary(
+  ["슨몽", "슨둑", "슨몽둑", "슨가몽", "슨나라", "리둑", "리몽", "이몽"].join("\n")
+);
+const startEndResult = logic.searchDictionary(startEndDictionary, {
+  query: "슨",
+  endQuery: "몽",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 1,
+  page: 1
+});
+assert.strictEqual(startEndResult.total, 2);
+assert.strictEqual(startEndResult.pageCount, 2);
+assert.strictEqual(startEndResult.queryInfo.endReading, "몽");
+assert.ok(startEndResult.results.every((entry) => entry.reading.endsWith("몽")));
+assert.strictEqual(
+  Object.values(startEndResult.categoryCounts).reduce((sum, count) => sum + count, 0),
+  startEndResult.total
+);
+
+const secondStartEndPage = logic.searchDictionary(startEndDictionary, {
+  query: "슨",
+  endQuery: "몽",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 1,
+  page: 2
+});
+assert.strictEqual(secondStartEndPage.results.length, 1);
+assert.ok(secondStartEndPage.results[0].reading.endsWith("몽"));
+
+const multiSyllableEnd = logic.searchDictionary(startEndDictionary, {
+  query: "슨",
+  endQuery: "가몽",
+  sourceMode: "starts",
+  pageSize: 10
+});
+assert.deepStrictEqual(multiSyllableEnd.results.map((entry) => entry.word), ["슨가몽"]);
+
+const nfdEnd = logic.searchDictionary(startEndDictionary, {
+  query: "슨",
+  endQuery: "\u1106\u1169\u11bc",
+  sourceMode: "starts",
+  pageSize: 10
+});
+assert.strictEqual(nfdEnd.total, 2);
+
+const exactEndMismatch = logic.searchDictionary(startEndDictionary, {
+  query: "슨몽",
+  endQuery: "둑",
+  sourceMode: "starts",
+  pageSize: 10
+});
+assert.deepStrictEqual(exactEndMismatch.results.map((entry) => entry.word), ["슨몽둑"]);
+
+const initialLawWithLiteralEnd = logic.searchDictionary(startEndDictionary, {
+  query: "리",
+  endQuery: "둑",
+  sourceMode: "starts",
+  pageSize: 10
+});
+assert.deepStrictEqual(initialLawWithLiteralEnd.results.map((entry) => entry.word), ["리둑"]);
+
+const emptyEndResult = logic.searchDictionary(startEndDictionary, {
+  query: "슨",
+  endQuery: "   ",
+  sourceMode: "starts",
+  pageSize: 20
+});
+const originalStartResult = logic.searchDictionary(startEndDictionary, {
+  query: "슨",
+  sourceMode: "starts",
+  pageSize: 20
+});
+assert.strictEqual(emptyEndResult.total, originalStartResult.total);
 
 const oldWordExactDictionary = logic.createDictionary(["곰븨님븨", "븨나무", "나무"].join("\n"));
 const oldWordReplyExact = logic.searchDictionary(oldWordExactDictionary, {
@@ -516,7 +607,10 @@ const breadBeforeUsed = logic.searchDictionary(usedWordBlunderDictionary, {
   oneShotOnly: false,
   pageSize: 10
 });
-assert.ok(!breadBeforeUsed.results.find((entry) => entry.word === "빵빵").blunder);
+const breadBeforeUsedEntry = breadBeforeUsed.results.find((entry) => entry.word === "빵빵");
+assert.ok(breadBeforeUsedEntry.blunder);
+assert.strictEqual(breadBeforeUsedEntry.alternativeOneShotReplyCount, 1);
+assert.deepStrictEqual(breadBeforeUsedEntry.alternativeOneShotReplyWords, ["빵값"]);
 
 const breadAfterUsed = logic.searchDictionary(usedWordBlunderDictionary, {
   query: "빵",
@@ -527,7 +621,7 @@ const breadAfterUsed = logic.searchDictionary(usedWordBlunderDictionary, {
 });
 const usedWordBlunder = breadAfterUsed.results.find((entry) => entry.word === "빵빵");
 assert.ok(usedWordBlunder);
-assert.ok(!usedWordBlunder.blunder);
+assert.ok(usedWordBlunder.blunder);
 assert.deepStrictEqual(
   breadAfterUsed.results.map((entry) => entry.word),
   breadBeforeUsed.results.map((entry) => entry.word)
@@ -563,8 +657,10 @@ const valueTable = logic.searchDictionary(valueTableDictionary, {
 const valueTableEntry = valueTable.results.find((entry) => entry.word === "값표");
 assert.ok(valueTableEntry);
 assert.strictEqual(valueTableEntry.followerCount, 1);
-assert.strictEqual(valueTableEntry.oneShotReplyCount, 1);
+assert.strictEqual(valueTableEntry.oneShotReplyCount, 0);
+assert.strictEqual(valueTableEntry.alternativeOneShotReplyCount, 1);
 assert.ok(valueTableEntry.blunder);
+assert.deepStrictEqual(valueTableEntry.alternativeOneShotReplyWords, ["표준값"]);
 
 const standardValue = logic.searchDictionary(valueTableDictionary, {
   query: "표",
