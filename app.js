@@ -352,6 +352,10 @@
     if (info.lead === RIEUL) {
       const replacement = IOTIZED_VOWELS.has(info.vowel) ? IEUNG : NIEUN;
       variants.add(composeSyllable(replacement, info.vowel, info.trail));
+      // Word-chain exception: 름 can also continue as 음.
+      if (syllable === "름") {
+        variants.add("음");
+      }
     }
 
     if (info.lead === NIEUN && IOTIZED_VOWELS.has(info.vowel)) {
@@ -1784,7 +1788,8 @@
         seen.add(reply.key);
         if (
           reply.alternativeOneShot &&
-          getAvailableFollowerCount(dictionary, reply, options) > 0
+          (isForcedAlternativeEntry(reply) ||
+            getAvailableFollowerCount(dictionary, reply, options) > 0)
         ) {
           replies.push(reply);
         }
@@ -1809,14 +1814,24 @@
     const followerCount = getAvailableFollowerCount(dictionary, entry, options);
     const forcedAlternative = isForcedAlternativeEntry(entry);
     const oneShot = !forcedAlternative && followerCount === 0;
+    const oneShotReplyCount = oneShot
+      ? 0
+      : getOneShotCounterEntries(dictionary, entry, options).length;
+    const alternativeOneShotReplyCount = oneShot || forcedAlternative
+      ? 0
+      : getAlternativeOneShotCounterEntries(dictionary, entry, options).length;
+    const blunder =
+      !oneShot &&
+      !forcedAlternative &&
+      (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
     const state = {
       ...entry,
       followerCount,
       oneShot,
-      alternativeOneShot: forcedAlternative || (!oneShot && Boolean(entry.alternativeOneShot)),
-      alternativeOneShotReplyCount: oneShot ? 0 : entry.alternativeOneShotReplyCount,
-      oneShotReplyCount: oneShot || forcedAlternative ? 0 : entry.oneShotReplyCount,
-      blunder: oneShot || forcedAlternative ? false : Boolean(entry.blunder)
+      alternativeOneShot: forcedAlternative || (!oneShot && !blunder && Boolean(entry.alternativeOneShot)),
+      alternativeOneShotReplyCount,
+      oneShotReplyCount,
+      blunder
     };
     options.stateCache.set(entry.key, state);
     return state;

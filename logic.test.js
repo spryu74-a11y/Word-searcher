@@ -6,7 +6,7 @@ assert.strictEqual(logic.toReading("\u1100\u1161"), "가");
 assert.deepStrictEqual(logic.getAllowedStartSyllables("란"), ["란", "난"]);
 assert.ok(!logic.getAllowedStartSyllables("란").includes("안"));
 assert.deepStrictEqual(logic.getAllowedStartSyllables("린"), ["린", "인"]);
-assert.deepStrictEqual(logic.getSearchPrefixes("름"), ["름", "늠"]);
+assert.deepStrictEqual(logic.getSearchPrefixes("름"), ["름", "늠", "음"]);
 assert.deepStrictEqual(logic.getSearchPrefixes("리"), ["리", "이"]);
 assert.deepStrictEqual(logic.getSearchPrefixes("이"), ["이"]);
 
@@ -101,6 +101,18 @@ const forcedSeun = logic.searchDictionary(forcedSeunDictionary, {
 assert.ok(forcedSeun);
 assert.ok(forcedSeun.alternativeOneShot);
 assert.ok(!forcedSeun.oneShot);
+
+const reumEumDictionary = logic.createDictionary(["가름", "음죵"].join("\n"));
+const reumEumResult = logic.searchDictionary(reumEumDictionary, {
+  query: "가",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+}).results.find((entry) => entry.word === "가름");
+assert.ok(reumEumResult);
+assert.strictEqual(reumEumResult.followerCount, 1);
+assert.ok(reumEumResult.blunder);
+assert.deepStrictEqual(reumEumResult.oneShotReplyWords, ["음죵"]);
 
 const allBlunderFollowerDictionary = logic.createDictionary(
   ["그릇", "릇가", "가끝", "릇나", "나끝"].join("\n")
@@ -657,6 +669,39 @@ const usedDisplayAfterReload = logic.applyUsedStateToResults(
 assert.strictEqual(usedDisplayAfterReload.find((entry) => entry.word === "빵빵").isUsed, true);
 const usedDisplayAfterUntoggle = logic.applyUsedStateToResults(breadAfterUsed.results, []);
 assert.strictEqual(usedDisplayAfterUntoggle.find((entry) => entry.word === "빵빵").isUsed, false);
+
+const usedAlternativeChainDictionary = logic.createDictionary([
+  "\uafbc\ub451",
+  "\ub451\uc2a8",
+  "\uafbc\ub451\uafbc\ub451",
+  "\ub451\uac00",
+  "\uac00\ub098"
+].join("\n"));
+const chainBeforeUsed = logic.searchDictionary(usedAlternativeChainDictionary, {
+  query: "\uafbc",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 20
+});
+const chainBeforeUsedEntry = chainBeforeUsed.results.find(
+  (entry) => entry.word === "\uafbc\ub451\uafbc\ub451"
+);
+assert.ok(chainBeforeUsedEntry && chainBeforeUsedEntry.blunder);
+assert.deepStrictEqual(chainBeforeUsedEntry.alternativeOneShotReplyWords, ["\ub451\uc2a8"]);
+const chainAfterUsed = logic.searchDictionary(usedAlternativeChainDictionary, {
+  query: "\uafbc",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 20,
+  usedKeys: ["\ub451\uc2a8"]
+});
+const chainAfterUsedEntry = chainAfterUsed.results.find(
+  (entry) => entry.word === "\uafbc\ub451\uafbc\ub451"
+);
+assert.ok(chainAfterUsedEntry);
+assert.strictEqual(chainAfterUsedEntry.alternativeOneShotReplyCount, 0);
+assert.ok(!chainAfterUsedEntry.blunder);
+assert.strictEqual(chainAfterUsedEntry.followerCount, 1);
 
 const valueTableDictionary = logic.createDictionary(["값표", "표준값"].join("\n"));
 const valueTable = logic.searchDictionary(valueTableDictionary, {

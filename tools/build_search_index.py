@@ -72,6 +72,10 @@ def allowed_start_syllables(syllable: str) -> list[str]:
         if next_value not in seen:
             seen.add(next_value)
             variants.append(next_value)
+        # Word-chain exception: 름 can also continue as 음.
+        if syllable == "름" and "음" not in seen:
+            seen.add("음")
+            variants.append("음")
 
     if lead == NIEUN and vowel in IOTIZED_VOWELS:
         next_value = compose_syllable(IEUNG, vowel, trail)

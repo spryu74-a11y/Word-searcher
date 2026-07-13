@@ -1728,12 +1728,18 @@ function getEntryState(index, options) {
   } else if (options.hasUsedWords) {
     followerCount = getAvailableFollowerCount(index, options);
     oneShot = !forcedAlternative && followerCount === 0;
-    if (oneShot) {
-      alternativeOneShot = false;
-      blunder = false;
-      oneShotReplyCount = 0;
-      alternativeOneShotReplyCount = 0;
-    }
+    const oneShotCounters = oneShot ? [] : getOneShotCounterIndices(index, options);
+    const alternativeOneShotCounters =
+      oneShot || forcedAlternative ? [] : getAlternativeOneShotCounterIndices(index, options);
+    oneShotReplyCount = oneShot ? 0 : oneShotCounters.length;
+    alternativeOneShotReplyCount =
+      oneShot || forcedAlternative ? 0 : alternativeOneShotCounters.length;
+    blunder =
+      !oneShot &&
+      !forcedAlternative &&
+      (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
+    alternativeOneShot =
+      forcedAlternative || (!oneShot && !blunder && category === CATEGORY_ALTERNATIVE);
   }
   if (forcedAlternative) {
     oneShot = false;
@@ -1840,7 +1846,10 @@ function getAlternativeOneShotCounterIndices(index, options) {
       seen.add(replyIndex);
       const entry = getPackedEntry(replyIndex);
       const category = getEntryCategory(replyIndex);
-      if (category === CATEGORY_ALTERNATIVE && getAvailableFollowerCount(replyIndex, options) > 0) {
+      if (
+        category === CATEGORY_ALTERNATIVE &&
+        (isForcedAlternativePacked(entry) || getAvailableFollowerCount(replyIndex, options) > 0)
+      ) {
         replies.push(replyIndex);
       }
     });
@@ -2189,6 +2198,10 @@ function getAllowedStartSyllables(syllable) {
   if (info.lead === RIEUL) {
     const replacement = IOTIZED_VOWELS.has(info.vowel) ? IEUNG : NIEUN;
     variants.add(composeSyllable(replacement, info.vowel, info.trail));
+    // Word-chain exception: 름 can also continue as 음.
+    if (syllable === "름") {
+      variants.add("음");
+    }
   }
   if (info.lead === NIEUN && IOTIZED_VOWELS.has(info.vowel)) {
     variants.add(composeSyllable(IEUNG, info.vowel, info.trail));
