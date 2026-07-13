@@ -67,13 +67,6 @@ const RIEUL = 5;
 const IEUNG = 11;
 const IOTIZED_VOWELS = new Set([2, 3, 6, 7, 12, 17, 20]);
 const EMPTY = Object.freeze([]);
-const PREWARM_STARTS = [
-  0xac12, 0xd2c0, 0xd504, 0xc2a4, 0xc544, 0xc774, 0xd06c, 0xc720,
-  0xb974, 0xbe0c, 0xbbc0, 0xb4dc, 0xd2b8, 0xc624, 0xd750, 0xb290,
-  0xadf8, 0xc6b0, 0xc9c0, 0xc2dc, 0xac00, 0xc0ac, 0xae30
-].map((codePoint) => String.fromCodePoint(codePoint));
-const PREWARM_START_SET = new Set(PREWARM_STARTS);
-
 let indexPromise = null;
 let useFullIndex = false;
 let shardFiles = Object.create(null);
@@ -626,7 +619,7 @@ function trimShardCache(protectedStarts) {
   if (useFullIndex || !loadedShardMeta.size) {
     return;
   }
-  const protectedSet = new Set([...(protectedStarts || []), ...PREWARM_START_SET]);
+  const protectedSet = new Set(protectedStarts || []);
   const nowMs = Date.now();
   for (const [start, meta] of loadedShardMeta.entries()) {
     if (protectedSet.has(start)) {
@@ -670,7 +663,8 @@ function evictShard(start) {
 async function buildRuntime(extraText) {
   const started = now();
   await ensureIndex();
-  await loadShards(PREWARM_STARTS);
+  // Do not preload the largest shards here. The first query loads only the
+  // shards it needs, while subsequent queries reuse the in-memory shard cache.
   clearSearchResultCache();
   runtimeVersion += 1;
   customEntries = [];
