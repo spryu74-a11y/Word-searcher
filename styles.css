@@ -98,23 +98,6 @@ button {
   background: var(--guild);
 }
 
-.guild-logo {
-  display: grid;
-  width: 44px;
-  height: 44px;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 14px;
-  background: #ffffff;
-}
-
-.guild-logo img {
-  display: block;
-  width: 44px;
-  height: 44px;
-  object-fit: cover;
-}
-
 .guild-icon {
   position: relative;
   display: grid;
@@ -252,23 +235,6 @@ button {
   gap: 10px;
   padding: 0 14px;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
-}
-
-.server-identity {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.site-logo {
-  display: block;
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: #ffffff;
-  object-fit: cover;
 }
 
 .server-header strong {
