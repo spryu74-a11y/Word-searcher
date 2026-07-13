@@ -9,6 +9,7 @@
       content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://r.jina.ai https://wordrow.kr https://ko.wiktionary.org; worker-src 'self'; child-src 'self'; form-action 'self'"
     />
     <title>끝말잇기 한방 검색기</title>
+    <link rel="icon" type="image/png" href="./assets/site-logo.png?v=20260713" />
     <link
       rel="preload"
       href="./assets/fonts/NanumGothic.woff?v=20260613"
@@ -20,6 +21,9 @@
   <body>
     <div class="discord-shell">
       <aside class="guild-rail" aria-label="서버">
+        <div class="guild-logo" aria-label="끝말잇기 로고">
+          <img src="./assets/site-logo.png?v=20260713" alt="끝말잇기 로고" width="44" height="44" />
+        </div>
         <button class="guild-icon guild-search selected" id="guildSearch" type="button" data-search-channel data-tooltip="검색기" aria-label="검색기">
           <svg class="guild-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <circle cx="11" cy="11" r="7"></circle>
@@ -37,7 +41,10 @@
 
       <aside class="channel-sidebar" aria-label="채널">
         <header class="server-header">
-          <strong class="server-title-search">끝말잇기 치트서버</strong>
+          <div class="server-identity">
+            <img class="site-logo" src="./assets/site-logo.png?v=20260713" alt="끝말잇기 로고" width="30" height="30" />
+            <strong class="server-title-search">끝말잇기 치트서버</strong>
+          </div>
           <strong class="server-title-settings">설정</strong>
           <span id="dictionaryState">단어장 로딩</span>
         </header>

@@ -40,6 +40,24 @@ assert.ok(initialLaw.results.some((entry) => entry.word === "늠름하다"));
 const secret = dictionary.entries.find((entry) => entry.word === "Secret");
 assert.ok(secret.oneShot);
 
+const languageDictionary = logic.createDictionary(["\uac00\ub098", "Secret", "\uc2dc\ub098"].join("\n"));
+const englishResults = logic.searchDictionary(languageDictionary, {
+  query: logic.englishToHangul("Secret").slice(0, 1),
+  sourceMode: "starts",
+  language: "en",
+  pageSize: 20
+});
+assert.ok(englishResults.results.length > 0);
+assert.ok(englishResults.results.every((entry) => entry.language === "en"));
+const koreanResults = logic.searchDictionary(languageDictionary, {
+  query: "\uc2dc",
+  sourceMode: "starts",
+  language: "ko",
+  pageSize: 20
+});
+assert.ok(koreanResults.results.every((entry) => entry.language === "ko"));
+assert.ok(logic.createDictionary(["\ub4f8\ub808"].join("\n")).entries.some((entry) => entry.word === "\ub4f8\ub808"));
+
 const trapDictionary = logic.createDictionary(["가나", "나라", "라끝"].join("\n"));
 const trap = trapDictionary.entries.find((entry) => entry.word === "가나");
 assert.ok(trap.alternativeOneShot);

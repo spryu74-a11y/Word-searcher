@@ -1561,6 +1561,9 @@
     const safeConnections = [];
     let total = 0;
     for (const entry of candidates) {
+      if (options.language && entry.language !== options.language) {
+        continue;
+      }
       if (options.endReading && !entry.reading.endsWith(options.endReading)) {
         continue;
       }
@@ -2113,6 +2116,7 @@
     const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
     const searchOptions = {
       oneShotOnly,
+      language: options.language === "en" ? "en" : options.language === "ko" ? "ko" : "",
       pageSize,
       page,
       exactWord,
@@ -2233,7 +2237,8 @@ function initApp(core) {
   const ONLINE_STORAGE_KEY = "kkung-online-dictionary-v8";
   const USED_WORDS_STORAGE_KEY = "kkung-used-words-v1";
   const USED_WORD_CONTROLS_STORAGE_KEY = "kkung-used-word-controls-v1";
-  const STATIC_WORD_PACK_MODE = true;
+  const LANGUAGE_STORAGE_KEY = "kkung-language-v1";
+  const STATIC_WORD_PACK_MODE = false;
   const ONLINE_PREFIX_CACHE_STORAGE_KEY = "kkung-online-prefix-cache-v16";
   const ONLINE_ONESHOT_PRELOAD_STORAGE_KEY = "kkung-online-oneshot-preload-v3";
   const OPENDICT_PROXY_ENDPOINT = "api/opendict/search";
@@ -2327,7 +2332,7 @@ function initApp(core) {
     "PageUp",
     "PageDown"
   ]);
-  const REQUIRED_SUPPLEMENT_WORDS = [];
+  const REQUIRED_SUPPLEMENT_WORDS = ["듸레"];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
   const elements = {
@@ -2388,6 +2393,7 @@ function initApp(core) {
   };
   const initialOnlineText = STATIC_WORD_PACK_MODE ? "" : readLocalStorage(ONLINE_STORAGE_KEY, "");
   const initialOnlineWords = parseOnlineWords(initialOnlineText);
+  const initialLanguage = readLocalStorage(LANGUAGE_STORAGE_KEY, "ko") === "en" ? "en" : "ko";
 
   const state = {
     dictionary: null,
@@ -2441,6 +2447,7 @@ function initApp(core) {
     },
     showUsedControls: true,
     sourceMode: "starts",
+    language: initialLanguage,
     usedWordIds: loadUsedWordIds(),
     usedVersion: 0,
     virtualResults: null,
@@ -2922,6 +2929,20 @@ function initApp(core) {
       setOneShotOnly(elements.settingsOneShotOnly.checked, true);
     });
   }
+  if (elements.settingsLanguage) {
+    addSearchEventListener(elements.settingsLanguage, "change", () => {
+      const nextLanguage = elements.settingsLanguage.value === "en" ? "en" : "ko";
+      if (state.language === nextLanguage) {
+        return;
+      }
+      state.language = nextLanguage;
+      writeLocalStorage(LANGUAGE_STORAGE_KEY, nextLanguage);
+      state.page = 1;
+      clearSearchResultCache();
+      state.lastRenderedSearchSignature = "";
+      scheduleSearch(0, true);
+    });
+  }
   if (elements.settingsSearch) {
     elements.settingsSearch.addEventListener("input", filterSettings);
   }
@@ -3387,6 +3408,7 @@ function initApp(core) {
         query,
         endQuery: validation.endQuery,
         sourceMode: state.sourceMode,
+        language: state.language,
         oneShotOnly: elements.oneShotOnly.checked,
         usedKeys: Array.from(state.usedWordIds),
         usedVersion: state.usedVersion,
@@ -3614,6 +3636,7 @@ function initApp(core) {
       core.toReading(query),
       core.toReading(elements.endQueryInput.value),
       state.sourceMode,
+      state.language,
       elements.oneShotOnly.checked ? "1" : "0",
       String(state.usedVersion),
       String(state.page),
@@ -3732,6 +3755,9 @@ function initApp(core) {
   }
 
   function syncSettingsControls() {
+    if (elements.settingsLanguage) {
+      elements.settingsLanguage.value = state.language;
+    }
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.checked = elements.oneShotOnly.checked;
     }
@@ -3798,6 +3824,7 @@ function initApp(core) {
     }
 
     const lookup = getOnlineLookupInfo(payload, target);
+    lookup.language = state.language;
     if (!lookup.prefixes.length) {
       return;
     }
@@ -3933,7 +3960,7 @@ function initApp(core) {
     if (!lookup || !lookup.target || !lookup.mode || !Array.isArray(lookup.prefixes)) {
       return "";
     }
-    return `${lookup.target}:${lookup.mode}:${lookup.exactWord || ""}:${lookup.endReading || ""}:${lookup.prefixes.join("|")}`;
+    return `${state.language}:${lookup.target}:${lookup.mode}:${lookup.exactWord || ""}:${lookup.endReading || ""}:${lookup.prefixes.join("|")}`;
   }
 
   function rememberOnlineAttempt(attemptKey) {
@@ -3967,6 +3994,7 @@ function initApp(core) {
       String(elements.queryInput.value || "").trim() === lookup.query &&
       core.toReading(elements.endQueryInput.value) === String(lookup.endReading || "") &&
       state.sourceMode === lookup.mode &&
+      state.language === (lookup.language || "ko") &&
       Boolean(elements.oneShotOnly.checked) === Boolean(lookup.oneShotOnly)
     );
   }
@@ -6058,7 +6086,7 @@ function initApp(core) {
     head.className = "message-head";
     const word = document.createElement("a");
     word.className = "word-link";
-    word.href = `https://www.google.com/search?q=${encodeURIComponent(entry.word)}`;
+    word.href = getWoorimalsaemSearchUrl(entry.word);
     word.target = "_blank";
     word.rel = "noopener noreferrer";
     word.referrerPolicy = "no-referrer";
@@ -6108,6 +6136,11 @@ function initApp(core) {
 
     row.append(avatar, body, actions);
     return row;
+  }
+
+  function getWoorimalsaemSearchUrl(value) {
+    const query = String(value || "").trim().replace(/\s+/g, "");
+    return `https://opendict.korean.go.kr/search/searchResult?focus_name_top=query&query=${encodeURIComponent(query)}`;
   }
 
   function createUsedWordControl(entry, row) {
@@ -6277,6 +6310,9 @@ function initApp(core) {
     elements.endQueryInput.disabled = state.appLoading;
     elements.endQueryInput.setAttribute("aria-disabled", state.appLoading ? "true" : "false");
     elements.oneShotOnly.disabled = state.appLoading;
+    if (elements.settingsLanguage) {
+      elements.settingsLanguage.disabled = state.appLoading;
+    }
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.disabled = state.appLoading;
     }

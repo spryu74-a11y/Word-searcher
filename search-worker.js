@@ -198,6 +198,9 @@ function validateIncomingMessage(message) {
     if (!validateBoundedString(options.endQuery || "", MAX_SEARCH_QUERY_LENGTH, true)) {
       return "search end query too large";
     }
+    if (options.language != null && options.language !== "" && options.language !== "ko" && options.language !== "en") {
+      return "invalid search language";
+    }
     if (!Array.isArray(options.usedKeys) || options.usedKeys.length > MAX_USED_KEYS) {
       return "used-word payload too large";
     }
@@ -960,9 +963,19 @@ async function searchDictionary(options, context) {
       ? searchByReply(queryInfo.starts)
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
-  const filteredCandidates = endReading
-    ? merged.filter((index) => entryReading(index).endsWith(endReading))
-    : merged;
+  const language = options.language === "en" || options.language === "ko" ? options.language : "";
+  const filteredCandidates = merged.filter((index) => {
+    if (endReading && !entryReading(index).endsWith(endReading)) {
+      return false;
+    }
+    if (language === "en") {
+      return getPackedEntry(index)[ENTRY_LANGUAGE] === "e";
+    }
+    if (language === "ko") {
+      return getPackedEntry(index)[ENTRY_LANGUAGE] !== "e";
+    }
+    return true;
+  });
 
   const collected = options.legacyFullSort
     ? collectResultsLegacy(
@@ -1041,6 +1054,7 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     queryInfo && queryInfo.reading ? queryInfo.reading : "",
     queryInfo && queryInfo.endReading ? queryInfo.endReading : "",
     sourceMode,
+    options.language === "en" ? "en" : options.language === "ko" ? "ko" : "",
     options.oneShotOnly ? "1" : "0",
     String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
     String(Math.max(1, Math.floor(Number(page)) || 1)),
@@ -1161,6 +1175,7 @@ function createSearchOptions(options) {
   }
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
+    language: options && (options.language === "en" || options.language === "ko") ? options.language : "",
     usedKeySet,
     hasUsedWords: usedKeySet.size > 0,
     forceDynamic: customEntries.length > 0,
