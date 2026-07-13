@@ -6332,7 +6332,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=security-hardening-20260713", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260713", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
