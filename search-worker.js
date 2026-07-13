@@ -283,7 +283,7 @@ async function handleMessage(message) {
       try {
         await ensureIndex();
         throwIfAborted(signal);
-        const payload = await searchDictionary(message.options || {}, {
+        const response = await searchDictionary(message.options || {}, {
           id: message.id,
           traceId: message.traceId || "",
           receivedAt,
@@ -293,7 +293,20 @@ async function handleMessage(message) {
           self.postMessage({ type: "searchCanceled", id: message.id, traceId: message.traceId || "" });
           return;
         }
+        const payload = response && response.payload ? response.payload : response;
         self.postMessage({ type: "searchResult", id: message.id, traceId: message.traceId || "", payload });
+        if (response && response.counterHydration) {
+          const updates = await hydrateCounterWords(response.counterHydration, signal);
+          if (message.id !== latestSearchId || isAborted(signal)) {
+            return;
+          }
+          self.postMessage({
+            type: "counterWords",
+            id: message.id,
+            traceId: message.traceId || "",
+            updates
+          });
+        }
       } catch (error) {
         if (isAbortError(error) || isAborted(signal)) {
           self.postMessage({ type: "searchCanceled", id: message.id, traceId: message.traceId || "" });
@@ -1007,9 +1020,22 @@ async function searchDictionary(options, context) {
   const stateMs = elapsed(t3);
 
   const counterShardStarts = getCounterShardStarts(visibleStates);
-  await loadShards(counterShardStarts, signal);
-  throwIfAborted(signal);
-  const results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions));
+  let counterHydration = null;
+  let results;
+  if (options.deferCounterWords && counterShardStarts.length) {
+    results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions, {
+      skipCounterWords: true
+    }));
+    counterHydration = {
+      visibleStates,
+      searchOptions,
+      counterShardStarts
+    };
+  } else {
+    await loadShards(counterShardStarts, signal);
+    throwIfAborted(signal);
+    results = visibleStates.map((state) => createSearchResultEntry(state, searchOptions));
+  }
 
   const totalMs = elapsed(started);
   const payload = {
@@ -1034,11 +1060,11 @@ async function searchDictionary(options, context) {
       candidateCount: filteredCandidates.length
     }
   };
-  if (!options.bypassCache) {
+  if (!options.bypassCache && !counterHydration) {
     putSearchResultCache(cacheKey, payload, queryInfo.reading);
   }
   logWorkerTrace(traceId, "search", payload.timing, payload.total);
-  return payload;
+  return counterHydration ? { payload, counterHydration } : payload;
 }
 
 function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page) {
@@ -1868,10 +1894,39 @@ function getAlternativeOneShotCounterIndices(index, options) {
   return replies;
 }
 
-function createSearchResultEntry(state, options) {
+async function hydrateCounterWords(hydration, signal) {
+  if (!hydration || typeof hydration !== "object") {
+    return [];
+  }
+  await loadShards(hydration.counterShardStarts || [], signal);
+  throwIfAborted(signal);
+  const states = Array.isArray(hydration.visibleStates) ? hydration.visibleStates : [];
+  const options = hydration.searchOptions || {};
+  return states
+    .filter((state) => state && state.blunder)
+    .map((state) => {
+      const entry = createSearchResultEntry(state, options);
+      return {
+        key: state.key,
+        oneShotReplyWords: entry.oneShotReplyWords || [],
+        alternativeOneShotReplyWords: entry.alternativeOneShotReplyWords || []
+      };
+    });
+}
+
+function createSearchResultEntry(state, options, flags) {
+  if (flags && flags.skipCounterWords) {
+    return {
+      ...state,
+      counterWordsPending: Boolean(state.blunder),
+      oneShotReplyWords: [],
+      alternativeOneShotReplyWords: []
+    };
+  }
   const contextReplyWords = getContextReplyWords(state, options);
   return {
     ...state,
+    counterWordsPending: false,
     oneShotReplyWords: getCounterReplyWords(
       state,
       (entry) => entry.oneShot,

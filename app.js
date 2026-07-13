@@ -1432,7 +1432,8 @@
           oneShotReplyWords.length > 0 ||
           alternativeOneShotReplyWords.length > 0),
       oneShotReplyWords,
-      alternativeOneShotReplyWords
+      alternativeOneShotReplyWords,
+      counterWordsPending: Boolean(entry.counterWordsPending)
     };
   }
 
@@ -2287,6 +2288,7 @@ function initApp(core) {
   const WORKER_RESPONSE_TYPES = new Set([
     "built",
     "searchResult",
+    "counterWords",
     "searchCanceled",
     "onlineAppendResult",
     "error"
@@ -2594,6 +2596,16 @@ function initApp(core) {
       return;
     }
 
+    if (message.type === "counterWords") {
+      const messageId = getWorkerMessageRequestId(message);
+      if (!messageId || messageId !== state.searchRequestId) {
+        state.searchMetrics.ignored += 1;
+        return;
+      }
+      applyCounterWordUpdates(message.updates);
+      return;
+    }
+
     if (message.type === "searchCanceled") {
       if (message.id === state.searchRequestId) {
         clearSearchWatchdog();
@@ -2698,6 +2710,12 @@ function initApp(core) {
       data.type === "onlineAppendResult" &&
       Array.isArray(data.words) &&
       data.words.length > MAX_WORKER_ONLINE_WORDS
+    ) {
+      return null;
+    }
+    if (
+      data.type === "counterWords" &&
+      (!Array.isArray(data.updates) || data.updates.length > MAX_WORKER_RESULT_ENTRIES)
     ) {
       return null;
     }
@@ -3282,7 +3300,13 @@ function initApp(core) {
       renderStartScreen();
     }
     window.clearTimeout(state.searchTimer);
-    state.searchTimer = window.setTimeout(runSearch, Math.max(0, Number(delay) || 0));
+    const waitMs = Math.max(0, Number(delay) || 0);
+    if (waitMs === 0) {
+      state.searchTimer = 0;
+      runSearch();
+      return;
+    }
+    state.searchTimer = window.setTimeout(runSearch, waitMs);
   }
 
   function getSearchInputValidation() {
@@ -3413,7 +3437,8 @@ function initApp(core) {
         usedKeys: Array.from(state.usedWordIds),
         usedVersion: state.usedVersion,
         page: state.page,
-        pageSize: getPageSize()
+        pageSize: getPageSize(),
+        deferCounterWords: true
       }
     });
   }
@@ -5836,6 +5861,59 @@ function initApp(core) {
     maybeRunOnlineLookup(payload);
   }
 
+  function applyCounterWordUpdates(updates) {
+    if (!Array.isArray(updates) || !updates.length) {
+      return;
+    }
+    const byKey = new Map();
+    for (const update of updates) {
+      const key = String(update && update.key || "").trim().toLowerCase();
+      if (key) {
+        byKey.set(key, update);
+      }
+    }
+    if (!byKey.size) {
+      return;
+    }
+
+    const virtual = state.virtualResults;
+    if (virtual && Array.isArray(virtual.entries)) {
+      for (const entry of virtual.entries) {
+        const key = String(entry && (entry.key || entry.word || "")).trim().toLowerCase();
+        const update = byKey.get(key);
+        if (!update) {
+          continue;
+        }
+        entry.oneShotReplyWords = Array.isArray(update.oneShotReplyWords)
+          ? update.oneShotReplyWords
+          : [];
+        entry.alternativeOneShotReplyWords = Array.isArray(update.alternativeOneShotReplyWords)
+          ? update.alternativeOneShotReplyWords
+          : [];
+        entry.counterWordsPending = false;
+      }
+      renderVirtualResultWindow(true);
+    }
+
+    const cached = state.searchResultCache.get(state.lastRenderedSearchSignature);
+    if (cached && cached.payload && Array.isArray(cached.payload.results)) {
+      for (const entry of cached.payload.results) {
+        const key = String(entry && (entry.key || entry.word || "")).trim().toLowerCase();
+        const update = byKey.get(key);
+        if (!update) {
+          continue;
+        }
+        entry.oneShotReplyWords = Array.isArray(update.oneShotReplyWords)
+          ? update.oneShotReplyWords
+          : [];
+        entry.alternativeOneShotReplyWords = Array.isArray(update.alternativeOneShotReplyWords)
+          ? update.alternativeOneShotReplyWords
+          : [];
+        entry.counterWordsPending = false;
+      }
+    }
+  }
+
   function clearVirtualResults() {
     state.virtualResults = null;
   }
@@ -6180,6 +6258,10 @@ function initApp(core) {
     const alternativeWords = entry.alternativeOneShotReplyWords || [];
     appendCounterReply(node, "한방 반격 ", oneShotWords);
     appendCounterReply(node, "대체 반격 ", alternativeWords);
+    if (!node.childNodes.length && entry.counterWordsPending) {
+      node.textContent = "반격 단어 불러오는 중…";
+      node.classList.add("counter-pending");
+    }
     return node;
   }
 
@@ -6332,7 +6414,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260713", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260713-r2", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
