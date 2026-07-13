@@ -121,6 +121,7 @@ function createClient(worker) {
           query,
           sourceMode: "starts",
           oneShotOnly: false,
+          usedKeys: [],
           page: 1,
           pageSize: 50,
           bypassCache: true,
