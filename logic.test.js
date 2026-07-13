@@ -91,6 +91,17 @@ assert.ok(sonmong.blunder);
 assert.strictEqual(sonmong.alternativeOneShotReplyCount, 1);
 assert.deepStrictEqual(sonmong.alternativeOneShotReplyWords, ["몽꾼"]);
 
+const forcedSeunDictionary = logic.createDictionary(["\uac00\uc2a8", "\uc2a8\uac00"].join("\n"));
+const forcedSeun = logic.searchDictionary(forcedSeunDictionary, {
+  query: "\uac00",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+}).results.find((entry) => entry.word === "\uac00\uc2a8");
+assert.ok(forcedSeun);
+assert.ok(forcedSeun.alternativeOneShot);
+assert.ok(!forcedSeun.oneShot);
+
 const allBlunderFollowerDictionary = logic.createDictionary(
   ["그릇", "릇가", "가끝", "릇나", "나끝"].join("\n")
 );
@@ -810,6 +821,22 @@ const nullPayload = logic.normalizeSearchPayload(null, {
 assert.strictEqual(nullPayload.total, 0);
 assert.deepStrictEqual(nullPayload.results, []);
 assert.ok(nullPayload.warnings.includes("payload-not-object"));
+
+const staleCategoryPayload = logic.normalizeSearchPayload({
+  total: 1,
+  results: [{
+    word: "\uac12\ud45c",
+    reading: "\uac12\ud45c",
+    language: "ko",
+    followerCount: 1,
+    oneShotReplyCount: 0,
+    alternativeOneShotReplyCount: 1,
+    oneShot: false,
+    alternativeOneShot: false,
+    blunder: false
+  }]
+}, { query: "\uac12", sourceMode: "starts", page: 1, pageSize: 10 });
+assert.ok(staleCategoryPayload.results[0].blunder);
 
 assert.match(
   logic.getSearchErrorMessage({ name: "TimeoutError", message: "online fetch timeout" }),

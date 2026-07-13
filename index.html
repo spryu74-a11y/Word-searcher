@@ -3,6 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://r.jina.ai https://wordrow.kr https://ko.wiktionary.org; worker-src 'self'; child-src 'self'; form-action 'self'"
+    />
     <title>끝말잇기 한방 검색기</title>
     <link
       rel="preload"
@@ -133,6 +138,7 @@
                 autocapitalize="off"
                 enterkeyhint="search"
                 spellcheck="false"
+                maxlength="80"
                 aria-label="시작 글자"
                 placeholder="시작 글자"
               />
@@ -145,6 +151,7 @@
                 autocapitalize="off"
                 enterkeyhint="search"
                 spellcheck="false"
+                maxlength="80"
                 aria-label="끝 글자 (선택)"
                 placeholder="끝 글자 (선택)"
               />
@@ -184,7 +191,7 @@
 
         <section class="settings-search">
           <label class="settings-search-input" for="settingsSearch">
-            <input id="settingsSearch" type="search" autocomplete="off" spellcheck="false" placeholder="설정 검색" />
+            <input id="settingsSearch" type="search" autocomplete="off" spellcheck="false" maxlength="100" placeholder="설정 검색" />
           </label>
         </section>
 
@@ -236,6 +243,7 @@
           <textarea
             id="customDictionary"
             spellcheck="false"
+            maxlength="1000000"
             placeholder="입력..."
           ></textarea>
           <div class="tool-row">
@@ -249,10 +257,10 @@
     </div>
 
     <footer class="site-license" aria-label="우리말샘 출처와 저작권">
-      <a href="https://opendict.korean.go.kr/" target="_blank" rel="noopener">출처:우리말샘</a>
-      <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener">CC BY-SA 2.0</a>
+      <a href="https://opendict.korean.go.kr/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">출처:우리말샘</a>
+      <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">CC BY-SA 2.0</a>
     </footer>
 
-    <script src="./app.js?v=start-end-filter-20260712"></script>
+    <script src="./app.js?v=security-hardening-20260713"></script>
   </body>
 </html>

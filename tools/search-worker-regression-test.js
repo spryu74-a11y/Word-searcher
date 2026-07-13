@@ -184,6 +184,16 @@ async function main() {
     assert.strictEqual(endKitAfter.oneShot, true);
     assert.strictEqual(endKitAfter.blunder, false);
 
+    const clampedPage = await request("search", {
+      options: {
+        ...searchOptions("\ub05d", [], 0),
+        page: Number.MAX_SAFE_INTEGER,
+        pageSize: Number.MAX_SAFE_INTEGER
+      }
+    });
+    assert.ok(clampedPage.payload.pageSize <= 200, "worker page size must be capped");
+    assert.ok(clampedPage.payload.results.length <= 200, "worker result payload must be capped");
+
     console.log("search worker regression tests passed");
   } finally {
     await worker.terminate();

@@ -51,6 +51,10 @@ def main() -> None:
     assert value_table[5] >= 1, "값표 must expose its return-trap counter"
     assert value_table[6] == 3, "값표 must be categorized as a blunder"
     assert standard_value[6] == 2, "표준값 must be categorized as an alternative one-shot"
+
+    seun_entries = [entry for entry in entries if entry[8] == "슨"]
+    assert seun_entries, "the index must contain words ending in 슨"
+    assert all(entry[6] == 2 for entry in seun_entries), "all 슨 endings must be alternative one-shots"
     print(f"search index v2 validated: entries={len(entries):,} first={len(by_first):,} last={len(by_last):,}")
 
 

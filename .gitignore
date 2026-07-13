@@ -9,3 +9,5 @@ stdict_key*.txt
 *api_key*.txt
 data/stdict_api_fetch_state.json
 server.*.log
+cloudflare/dist/
+cloudflare/.wrangler/

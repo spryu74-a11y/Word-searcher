@@ -26,7 +26,9 @@
   const DEFAULT_LIMIT = 260;
   const MAX_SEARCH_QUERY_LENGTH = 80;
   const MAX_COUNTER_REPLY_WORDS = 12;
-  const FORCED_ALTERNATIVE_ENDINGS = new Set(["값"]);
+  // These endings are always shown as 대체한방. Keep this list in sync with
+  // the offline index builder and the search worker.
+  const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨"]);
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
     ["겨", "기다"],
@@ -1386,6 +1388,20 @@
     const start = cleanHangul(entry.start)[0] || reading[0] || "";
     const end = cleanHangul(entry.end)[0] || getLastSyllable(reading);
     const allowedAfter = normalizeSyllableList(entry.allowedAfter);
+    const forcedAlternative =
+      entry.language !== "en" && FORCED_ALTERNATIVE_ENDINGS.has(end);
+    const normalizedOneShot = !forcedAlternative && Boolean(entry.oneShot);
+    const normalizedAlternative =
+      forcedAlternative || (!normalizedOneShot && Boolean(entry.alternativeOneShot));
+    const oneShotReplyCount = toNonNegativeInteger(entry.oneShotReplyCount, 0);
+    const alternativeOneShotReplyCount = toNonNegativeInteger(
+      entry.alternativeOneShotReplyCount,
+      0
+    );
+    const oneShotReplyWords = normalizeWordList(entry.oneShotReplyWords);
+    const alternativeOneShotReplyWords = normalizeWordList(
+      entry.alternativeOneShotReplyWords
+    );
 
     return {
       key: normalizeNfc(entry.key || displayWord).trim().toLowerCase(),
@@ -1396,13 +1412,23 @@
       end,
       allowedAfter: allowedAfter.length ? allowedAfter : end ? getAllowedStartSyllables(end) : [],
       followerCount: toNonNegativeInteger(entry.followerCount, 0),
-      oneShotReplyCount: toNonNegativeInteger(entry.oneShotReplyCount, 0),
-      alternativeOneShotReplyCount: toNonNegativeInteger(entry.alternativeOneShotReplyCount, 0),
-      oneShot: Boolean(entry.oneShot),
-      alternativeOneShot: Boolean(entry.alternativeOneShot),
-      blunder: Boolean(entry.blunder),
-      oneShotReplyWords: normalizeWordList(entry.oneShotReplyWords),
-      alternativeOneShotReplyWords: normalizeWordList(entry.alternativeOneShotReplyWords)
+      oneShotReplyCount,
+      alternativeOneShotReplyCount,
+      oneShot: normalizedOneShot,
+      alternativeOneShot: normalizedAlternative,
+      // A stale shard can still carry the old connection category even though
+      // it already exposes a winning counter. Derive blunder from the counts
+      // so the UI never labels that move as a safe/best connection.
+      blunder:
+        !normalizedOneShot &&
+        !normalizedAlternative &&
+        (Boolean(entry.blunder) ||
+          oneShotReplyCount > 0 ||
+          alternativeOneShotReplyCount > 0 ||
+          oneShotReplyWords.length > 0 ||
+          alternativeOneShotReplyWords.length > 0),
+      oneShotReplyWords,
+      alternativeOneShotReplyWords
     };
   }
 
@@ -2193,10 +2219,8 @@ function initApp(core) {
   const USED_WORDS_STORAGE_KEY = "kkung-used-words-v1";
   const USED_WORD_CONTROLS_STORAGE_KEY = "kkung-used-word-controls-v1";
   const STATIC_WORD_PACK_MODE = true;
-  const OPENDICT_API_KEY_SESSION_STORAGE_KEY = "kkung-opendict-api-key-session-v1";
   const ONLINE_PREFIX_CACHE_STORAGE_KEY = "kkung-online-prefix-cache-v16";
   const ONLINE_ONESHOT_PRELOAD_STORAGE_KEY = "kkung-online-oneshot-preload-v3";
-  const OPENDICT_SEARCH_ENDPOINT = "https://opendict.korean.go.kr/api/search";
   const OPENDICT_PROXY_ENDPOINT = "api/opendict/search";
   const WORDROW_START_ENDPOINT = "https://wordrow.kr/%EC%8B%9C%EC%9E%91%ED%95%98%EB%8A%94-%EB%A7%90/";
   const WORDROW_MEANING_ENDPOINT = "https://wordrow.kr/%EC%9D%98%EB%AF%B8/";
@@ -2227,6 +2251,31 @@ function initApp(core) {
   const ONLINE_ONESHOT_EXACT_PRELOAD_WORDS = ["해질녘", "과일쨤", "다래쨤", "과실쨤", "치마긶"];
   const ONLINE_WORDROW_FETCH_TIMEOUT_MS = 4500;
   const ONLINE_API_FETCH_TIMEOUT_MS = 5500;
+  const OPENDICT_MAX_PAGES = 10;
+  const MAX_CUSTOM_DICTIONARY_INPUT_CHARS = 1000000;
+  const MAX_CUSTOM_DICTIONARY_FILE_BYTES = 3 * 1024 * 1024;
+  const MAX_CUSTOM_DICTIONARY_TOTAL_CHARS = 4 * 1024 * 1024;
+  const MAX_CUSTOM_DICTIONARY_LINES = 200000;
+  const MAX_CUSTOM_DICTIONARY_LINE_CHARS = 264;
+  const MAX_STORAGE_VALUE_CHARS = 2 * 1024 * 1024;
+  const MAX_USED_WORD_IDS = 50000;
+  const MAX_ONLINE_RESPONSE_BYTES = 4 * 1024 * 1024;
+  const MAX_OPENDICT_RESPONSE_BYTES = 1024 * 1024;
+  const MAX_WORKER_RESULT_ENTRIES = 200;
+  const MAX_WORKER_ONLINE_WORDS = 5000;
+  const MAX_ONLINE_WORD_LENGTH = 128;
+  const WORKER_RESPONSE_TYPES = new Set([
+    "built",
+    "searchResult",
+    "searchCanceled",
+    "onlineAppendResult",
+    "error"
+  ]);
+  const ALLOWED_ONLINE_REQUEST_ORIGINS = new Set([
+    "https://r.jina.ai",
+    "https://wordrow.kr",
+    "https://ko.wiktionary.org"
+  ]);
   const WORDROW_WORD_LIMIT = 3000;
   const WORDROW_WIKTIONARY_MERGE_THRESHOLD = 40;
   const ONLINE_PREFIX_CACHE_SAVE_DELAY = 350;
@@ -2391,7 +2440,11 @@ function initApp(core) {
   const dictionaryDrawerMedia = window.matchMedia(DICTIONARY_DRAWER_QUERY);
   const mobileMedia = window.matchMedia(MOBILE_QUERY);
 
-  elements.customDictionary.value = readLocalStorage(CUSTOM_STORAGE_KEY, "");
+  elements.customDictionary.value = readLocalStorage(
+    CUSTOM_STORAGE_KEY,
+    "",
+    MAX_CUSTOM_DICTIONARY_INPUT_CHARS
+  );
   syncSettingsControls();
   elements.defaultSourceMeta.textContent =
     `KO ${formatNumber(defaultMeta.korean)} / EN ${formatNumber(defaultMeta.english)} / 추가 ${formatNumber(defaultMeta.extra)}`;
@@ -2602,7 +2655,31 @@ function initApp(core) {
   }
 
   function normalizeWorkerMessage(data) {
-    if (!data || typeof data !== "object" || typeof data.type !== "string") {
+    if (
+      !data ||
+      typeof data !== "object" ||
+      typeof data.type !== "string" ||
+      !WORKER_RESPONSE_TYPES.has(data.type) ||
+      !getWorkerMessageRequestId(data)
+    ) {
+      return null;
+    }
+    if (
+      data.type === "searchResult" &&
+      data.payload &&
+      Array.isArray(data.payload.results) &&
+      data.payload.results.length > MAX_WORKER_RESULT_ENTRIES
+    ) {
+      return null;
+    }
+    if (
+      data.type === "onlineAppendResult" &&
+      Array.isArray(data.words) &&
+      data.words.length > MAX_WORKER_ONLINE_WORDS
+    ) {
+      return null;
+    }
+    if (data.type === "error" && typeof data.message !== "string") {
       return null;
     }
     return data;
@@ -2879,6 +2956,10 @@ function initApp(core) {
   addMediaListener(mobileMedia, () => scheduleSearch(0, true));
 
   elements.applyDictionary.addEventListener("click", () => {
+    if (elements.customDictionary.value.length > MAX_CUSTOM_DICTIONARY_INPUT_CHARS) {
+      elements.buildState.textContent = "추가 단어가 너무 큽니다";
+      return;
+    }
     writeLocalStorage(CUSTOM_STORAGE_KEY, elements.customDictionary.value);
     rebuildDictionary();
   });
@@ -2919,11 +3000,31 @@ function initApp(core) {
     if (!file) {
       return;
     }
+    if (file.size > MAX_CUSTOM_DICTIONARY_FILE_BYTES) {
+      elements.fileInput.value = "";
+      state.fileText = "";
+      state.fileName = "";
+      elements.fileState.textContent = `파일은 ${formatNumber(MAX_CUSTOM_DICTIONARY_FILE_BYTES)}B 이하만 가능`;
+      setBusy(false, "파일 크기 초과");
+      return;
+    }
 
     const reader = new FileReader();
     setBusy(true, "파일 읽는중");
     reader.addEventListener("load", () => {
-      state.fileText = String(reader.result || "");
+      const fileText = String(reader.result || "");
+      if (
+        fileText.length > MAX_CUSTOM_DICTIONARY_FILE_BYTES ||
+        elements.customDictionary.value.length + fileText.length > MAX_CUSTOM_DICTIONARY_TOTAL_CHARS
+      ) {
+        elements.fileInput.value = "";
+        state.fileText = "";
+        state.fileName = "";
+        elements.fileState.textContent = "사전 데이터가 너무 큽니다";
+        setBusy(false, "파일 크기 초과");
+        return;
+      }
+      state.fileText = fileText;
       state.fileName = file.name;
       elements.fileState.textContent = `${file.name} (${formatNumber(file.size)}B)`;
       rebuildDictionary();
@@ -2982,8 +3083,15 @@ function initApp(core) {
   }
 
   function getDictionaryExtraText() {
-    return [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText]
+    const extraText = [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText]
       .filter(Boolean)
+      .join("\n");
+    const boundedText = extraText.length <= MAX_CUSTOM_DICTIONARY_TOTAL_CHARS
+      ? extraText
+      : extraText.slice(0, MAX_CUSTOM_DICTIONARY_TOTAL_CHARS);
+    return boundedText
+      .split(/\r?\n/, MAX_CUSTOM_DICTIONARY_LINES)
+      .filter((line) => line.length <= MAX_CUSTOM_DICTIONARY_LINE_CHARS)
       .join("\n");
   }
 
@@ -3852,10 +3960,18 @@ function initApp(core) {
     return uniqueOnlineWords(String(text || "").split(/\r?\n/));
   }
 
-  function readLocalStorage(key, fallback) {
+  function readLocalStorage(key, fallback, maxLength) {
     try {
       const value = localStorage.getItem(key);
-      return value === null ? fallback : value;
+      if (value === null) {
+        return fallback;
+      }
+      const limit = Math.max(1, Math.floor(Number(maxLength)) || MAX_STORAGE_VALUE_CHARS);
+      if (value.length > limit) {
+        localStorage.removeItem(key);
+        return fallback;
+      }
+      return value;
     } catch {
       return fallback;
     }
@@ -3863,7 +3979,11 @@ function initApp(core) {
 
   function writeLocalStorage(key, value) {
     try {
-      localStorage.setItem(key, value);
+      const text = String(value == null ? "" : value);
+      if (text.length > MAX_STORAGE_VALUE_CHARS) {
+        return false;
+      }
+      localStorage.setItem(key, text);
       return true;
     } catch {
       return false;
@@ -3892,7 +4012,12 @@ function initApp(core) {
       if (!Array.isArray(parsed)) {
         return new Set();
       }
-      return new Set(parsed.map(normalizeUsedWordId).filter(Boolean));
+      return new Set(
+        parsed
+          .slice(0, MAX_USED_WORD_IDS)
+          .map(normalizeUsedWordId)
+          .filter(Boolean)
+      );
     } catch {
       return new Set();
     }
@@ -3925,6 +4050,9 @@ function initApp(core) {
     const wasUsed = state.usedWordIds.has(id);
     if (isUsed) {
       state.usedWordIds.add(id);
+      while (state.usedWordIds.size > MAX_USED_WORD_IDS) {
+        state.usedWordIds.delete(state.usedWordIds.values().next().value);
+      }
     } else {
       state.usedWordIds.delete(id);
     }
@@ -3953,20 +4081,6 @@ function initApp(core) {
     });
   }
 
-  function normalizeOpendictApiKey(value) {
-    return String(value || "").trim().replace(/\s+/g, "");
-  }
-
-  function isValidOpendictApiKey(value) {
-    return /^[0-9a-f]{32}$/i.test(normalizeOpendictApiKey(value));
-  }
-
-  function getOpendictApiKey() {
-    const value = elements.opendictApiKey ? elements.opendictApiKey.value : loadOpendictApiKey();
-    const key = normalizeOpendictApiKey(value);
-    return isValidOpendictApiKey(key) ? key : "";
-  }
-
   function canUseOpendictProxy() {
     return /^https?:$/i.test(window.location.protocol);
   }
@@ -3975,34 +4089,26 @@ function initApp(core) {
     if (!canUseOpendictProxy() || state.opendictProxyUnavailable) {
       return "";
     }
-    return new URL(OPENDICT_PROXY_ENDPOINT, window.location.href).toString();
-  }
-
-  function isOpendictLookupEnabled() {
-    // The proxy supplies the API key server-side (OPENDICT_API_KEY), so lookups
-    // should run whenever a proxy is reachable even if no key is typed in the field.
-    return Boolean(getOpendictApiKey()) || Boolean(getOpendictProxyUrl());
-  }
-
-  function loadOpendictApiKey() {
     try {
-      return normalizeOpendictApiKey(sessionStorage.getItem(OPENDICT_API_KEY_SESSION_STORAGE_KEY) || "");
+      const url = new URL(OPENDICT_PROXY_ENDPOINT, window.location.href);
+      if (
+        url.origin !== window.location.origin ||
+        !/^https?:$/i.test(url.protocol) ||
+        url.username ||
+        url.password
+      ) {
+        return "";
+      }
+      url.hash = "";
+      return url.toString();
     } catch {
       return "";
     }
   }
 
-  function saveOpendictApiKey(value) {
-    const key = normalizeOpendictApiKey(value);
-    try {
-      if (key) {
-        sessionStorage.setItem(OPENDICT_API_KEY_SESSION_STORAGE_KEY, key);
-      } else {
-        sessionStorage.removeItem(OPENDICT_API_KEY_SESSION_STORAGE_KEY);
-      }
-    } catch {
-      // Keep the typed key in the password field even if session storage is unavailable.
-    }
+  function isOpendictLookupEnabled() {
+    // API keys stay server-side. The browser may only call the same-origin proxy.
+    return Boolean(getOpendictProxyUrl());
   }
 
   function uniqueOnlineWords(words) {
@@ -4051,11 +4157,17 @@ function initApp(core) {
       }
 
       const parsed = JSON.parse(raw);
-      const items = Array.isArray(parsed && parsed.items) ? parsed.items : [];
+      const items = Array.isArray(parsed && parsed.items)
+        ? parsed.items.slice(0, ONLINE_PREFIX_CACHE_MAX)
+        : [];
       const cache = new Map();
       for (const item of items) {
         const prefix = normalizeOnlinePrefix(item && item.prefix);
-        const words = uniqueOnlineWords(Array.isArray(item && item.words) ? item.words : [])
+        const words = uniqueOnlineWords(
+          Array.isArray(item && item.words)
+            ? item.words.slice(0, ONLINE_PREFIX_CACHE_WORD_LIMIT)
+            : []
+        )
           .slice(0, ONLINE_PREFIX_CACHE_WORD_LIMIT);
         if (!prefix || !words.length || cache.has(prefix)) {
           continue;
@@ -4248,11 +4360,49 @@ function initApp(core) {
     return error;
   }
 
+  function normalizeOnlineRequestUrl(value) {
+    let url;
+    try {
+      url = new URL(String(value || ""), window.location.href);
+    } catch {
+      throw new Error("online request URL rejected");
+    }
+    if (url.username || url.password || url.hash) {
+      throw new Error("online request URL rejected");
+    }
+
+    const proxyUrl = getOpendictProxyUrl();
+    if (proxyUrl) {
+      const proxy = new URL(proxyUrl);
+      if (url.origin === proxy.origin && url.pathname === proxy.pathname) {
+        return url.toString();
+      }
+    }
+
+    if (url.protocol !== "https:" || !ALLOWED_ONLINE_REQUEST_ORIGINS.has(url.origin)) {
+      throw new Error("online request destination rejected");
+    }
+    if (url.origin === "https://ko.wiktionary.org" && url.pathname !== "/w/api.php") {
+      throw new Error("online request path rejected");
+    }
+    if (url.origin === "https://r.jina.ai" && !url.pathname.startsWith("/http://")) {
+      throw new Error("online request path rejected");
+    }
+    return url.toString();
+  }
+
   async function fetchWithTimeout(url, options, timeoutMs) {
-    const fetchOptions = { ...(options || {}) };
+    const requestUrl = normalizeOnlineRequestUrl(url);
+    const fetchOptions = {
+      ...(options || {}),
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      referrerPolicy: "no-referrer"
+    };
     const parentSignal = fetchOptions.signal;
     if (!timeoutMs || typeof AbortController !== "function") {
-      return fetch(url, fetchOptions);
+      return fetch(requestUrl, fetchOptions);
     }
     if (parentSignal && parentSignal.aborted) {
       throw createAbortError();
@@ -4273,7 +4423,7 @@ function initApp(core) {
 
     fetchOptions.signal = controller.signal;
     try {
-      return await fetch(url, fetchOptions);
+      return await fetch(requestUrl, fetchOptions);
     } catch (error) {
       if (parentSignal && parentSignal.aborted) {
         throw createAbortError();
@@ -4290,20 +4440,80 @@ function initApp(core) {
     }
   }
 
+  async function readResponseTextLimited(response, maxBytes, label) {
+    const limit = Math.max(1, Math.floor(Number(maxBytes)) || MAX_ONLINE_RESPONSE_BYTES);
+    const contentLength = Number(response && response.headers && response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > limit) {
+      throw new Error(`${label || "online"} response too large`);
+    }
+
+    if (
+      response &&
+      response.body &&
+      typeof response.body.getReader === "function" &&
+      typeof TextDecoder === "function"
+    ) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8", { fatal: false });
+      let total = 0;
+      let text = "";
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            break;
+          }
+          total += chunk.value ? chunk.value.byteLength : 0;
+          if (total > limit) {
+            await reader.cancel();
+            throw new Error(`${label || "online"} response too large`);
+          }
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+        return text + decoder.decode();
+      } finally {
+        if (typeof reader.releaseLock === "function") {
+          reader.releaseLock();
+        }
+      }
+    }
+
+    const text = await response.text();
+    const byteLength = typeof TextEncoder === "function"
+      ? new TextEncoder().encode(text).byteLength
+      : text.length * 2;
+    if (byteLength > limit) {
+      throw new Error(`${label || "online"} response too large`);
+    }
+    return text;
+  }
+
+  async function readJsonResponseLimited(response, maxBytes, label) {
+    return JSON.parse(await readResponseTextLimited(response, maxBytes, label));
+  }
+
   function getWordrowRequestUrls(targetUrl) {
-    const normalizedUrl = String(targetUrl || "").trim();
-    if (!normalizedUrl) {
+    let target;
+    try {
+      target = new URL(String(targetUrl || "").trim());
+    } catch {
       return [];
     }
+    if (
+      target.protocol !== "https:" ||
+      target.origin !== "https://wordrow.kr" ||
+      target.username ||
+      target.password ||
+      target.hash
+    ) {
+      return [];
+    }
+    const normalizedUrl = target.toString();
 
     const withoutScheme = normalizedUrl.replace(/^https?:\/\//, "");
     const urls = [];
     for (const endpoint of WORDROW_READER_ENDPOINTS) {
-      urls.push(
-        `${endpoint}${withoutScheme}`,
-        `${endpoint}http://${withoutScheme}`,
-        `${endpoint}${normalizedUrl}`
-      );
+      urls.push(`${endpoint}${withoutScheme}`);
     }
     urls.push(normalizedUrl);
     return Array.from(new Set(urls));
@@ -4353,7 +4563,9 @@ function initApp(core) {
         if (!response.ok) {
           continue;
         }
-        const words = parseWordrowOneShotWords(await response.text());
+        const words = parseWordrowOneShotWords(
+          await readResponseTextLimited(response, MAX_ONLINE_RESPONSE_BYTES, "wordrow")
+        );
         if (words.length) {
           return words;
         }
@@ -4715,14 +4927,18 @@ function initApp(core) {
   }
 
   async function fetchOpendictWords(query, method, limit, signal) {
-    const apiKey = getOpendictApiKey();
     const normalizedQuery = normalizeOnlineTitle(query);
     if (!normalizedQuery) {
       return [];
     }
 
-    const requestedLimit = Math.max(1, Math.floor(Number(limit) || 10));
+    const normalizedMethod = method === "exact" ? "exact" : "start";
+    const requestedLimit = Math.min(
+      OPENDICT_ONESHOT_PREFIX_WORD_LIMIT,
+      Math.max(1, Math.floor(Number(limit) || 10))
+    );
     const pageSize = Math.min(100, requestedLimit);
+    const maxPages = Math.min(OPENDICT_MAX_PAGES, Math.ceil(requestedLimit / pageSize));
     updateOpendictState("조회중");
     const params = new URLSearchParams({
       q: normalizedQuery,
@@ -4731,7 +4947,7 @@ function initApp(core) {
       sort: "dict",
       advanced: "y",
       target: "1",
-      method,
+      method: normalizedMethod,
       type1: "word",
       type3: "all",
       start: "1",
@@ -4740,13 +4956,23 @@ function initApp(core) {
 
     const words = [];
     const seen = new Set();
-    for (let start = 1; words.length < requestedLimit; start += pageSize) {
+    for (
+      let start = 1, pageCount = 0;
+      words.length < requestedLimit && pageCount < maxPages;
+      start += pageSize, pageCount += 1
+    ) {
       if (signal && signal.aborted) {
         throw createAbortError();
       }
 
       params.set("start", String(start));
-      const pageWords = await fetchOpendictWordsPage(params, apiKey, normalizedQuery, method, signal);
+      const pageWords = await fetchOpendictWordsPage(
+        params,
+        normalizedQuery,
+        normalizedMethod,
+        signal
+      );
+      let addedThisPage = 0;
       for (const word of pageWords) {
         const normalizedWord = normalizeOnlineTitle(word);
         const key = normalizedWord.toLowerCase();
@@ -4755,11 +4981,12 @@ function initApp(core) {
         }
         seen.add(key);
         words.push(normalizedWord);
+        addedThisPage += 1;
         if (words.length >= requestedLimit) {
           break;
         }
       }
-      if (pageWords.length < pageSize) {
+      if (pageWords.length < pageSize || addedThisPage === 0) {
         break;
       }
     }
@@ -4767,68 +4994,43 @@ function initApp(core) {
     return words;
   }
 
-  async function fetchOpendictWordsPage(params, apiKey, normalizedQuery, method, signal) {
-    if (apiKey) {
-      params.set("key", apiKey);
-      try {
-        return await fetchOpendictEndpoint(`${OPENDICT_SEARCH_ENDPOINT}?${params.toString()}`, normalizedQuery, method, signal);
-      } catch (error) {
-        if (error && error.name === "AbortError") {
-          throw error;
-        }
-        const proxyUrl = getOpendictProxyUrl();
-        if (!proxyUrl) {
-          if (error instanceof TypeError) {
-            updateOpendictState("프록시 필요");
-          }
-          throw error;
-        }
-        const proxyParams = new URLSearchParams(params);
-        try {
-          return await fetchOpendictEndpoint(`${proxyUrl}?${proxyParams.toString()}`, normalizedQuery, method, signal);
-        } catch (proxyError) {
-          if (proxyError && proxyError.name === "AbortError") {
-            throw proxyError;
-          }
-          state.opendictProxyUnavailable = true;
-          throw error;
-        }
-      }
-    }
-
+  async function fetchOpendictWordsPage(params, normalizedQuery, method, signal) {
     const proxyUrl = getOpendictProxyUrl();
     if (proxyUrl) {
       try {
-        return await fetchOpendictEndpoint(`${proxyUrl}?${params.toString()}`, normalizedQuery, method, signal);
+        const requestUrl = new URL(proxyUrl);
+        requestUrl.search = params.toString();
+        return await fetchOpendictEndpoint(requestUrl.toString(), normalizedQuery, method, signal);
       } catch (error) {
         if (error && error.name === "AbortError") {
           throw error;
         }
         state.opendictProxyUnavailable = true;
-        updateOpendictState("키 필요");
+        updateOpendictState("프록시 오류");
         return [];
       }
     }
 
-    if (!apiKey) {
-      updateOpendictState("키 없음");
-      return [];
-    }
-
+    updateOpendictState("프록시 없음");
     return [];
   }
 
   async function fetchOpendictEndpoint(url, query, method, signal) {
     const proxyUrl = getOpendictProxyUrl();
-    const isProxyRequest = Boolean(proxyUrl && String(url).startsWith(proxyUrl));
-    const traceId = isProxyRequest ? createTraceId(state.onlineLookupId || state.requestId || 0) : "";
-    if (isProxyRequest) {
-      logSearchTrace("opendict-request", {
-        traceId,
-        method,
-        queryLength: String(query || "").length
-      });
+    if (!proxyUrl) {
+      throw new Error("opendict proxy unavailable");
     }
+    const requestUrl = new URL(url, window.location.href);
+    const trustedProxy = new URL(proxyUrl);
+    if (requestUrl.origin !== trustedProxy.origin || requestUrl.pathname !== trustedProxy.pathname) {
+      throw new Error("opendict proxy URL rejected");
+    }
+    const traceId = createTraceId(state.onlineLookupId || state.requestId || 0);
+    logSearchTrace("opendict-request", {
+      traceId,
+      method,
+      queryLength: String(query || "").length
+    });
     const response = await fetchWithTimeout(
       url,
       {
@@ -4864,7 +5066,11 @@ function initApp(core) {
   }
 
   async function parseOpendictResponse(response) {
-    const text = await response.text();
+    const text = await readResponseTextLimited(
+      response,
+      MAX_OPENDICT_RESPONSE_BYTES,
+      "opendict"
+    );
     const trimmed = text.trim();
     if (!trimmed) {
       return {};
@@ -4964,7 +5170,7 @@ function initApp(core) {
   }
 
   function handleOpendictLookupError(error) {
-    if (!getOpendictApiKey()) {
+    if (!getOpendictProxyUrl()) {
       return;
     }
 
@@ -4974,7 +5180,7 @@ function initApp(core) {
       return;
     }
 
-    updateOpendictState(/key|020|unregistered|인증|등록/i.test(message) ? "키 오류" : "조회 실패");
+    updateOpendictState(/key|020|unregistered|인증|등록/i.test(message) ? "프록시 인증 오류" : "조회 실패");
   }
 
   async function fetchWordrowMeaningWord(word, signal) {
@@ -5000,7 +5206,10 @@ function initApp(core) {
         if (!response.ok) {
           continue;
         }
-        const words = parseWordrowMeaningWords(await response.text(), normalizedWord);
+        const words = parseWordrowMeaningWords(
+          await readResponseTextLimited(response, MAX_ONLINE_RESPONSE_BYTES, "wordrow"),
+          normalizedWord
+        );
         if (words.length) {
           return words;
         }
@@ -5080,7 +5289,11 @@ function initApp(core) {
         if (!response.ok) {
           continue;
         }
-        const words = parseWordrowPrefixWords(await response.text(), prefix, requestedLimit);
+        const words = parseWordrowPrefixWords(
+          await readResponseTextLimited(response, MAX_ONLINE_RESPONSE_BYTES, "wordrow"),
+          prefix,
+          requestedLimit
+        );
         if (words.length) {
           return words;
         }
@@ -5238,8 +5451,17 @@ function initApp(core) {
         "continue": ""
       });
       if (continuation) {
-        for (const [key, value] of Object.entries(continuation)) {
-          params.set(key, value);
+        const apcontinue = typeof continuation.apcontinue === "string"
+          ? continuation.apcontinue.slice(0, 512)
+          : "";
+        const continueToken = typeof continuation.continue === "string"
+          ? continuation.continue.slice(0, 64)
+          : "";
+        if (apcontinue) {
+          params.set("apcontinue", apcontinue);
+        }
+        if (continueToken) {
+          params.set("continue", continueToken);
         }
       }
 
@@ -5252,15 +5474,27 @@ function initApp(core) {
         throw new Error(`online lookup failed: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = await readJsonResponseLimited(response, MAX_ONLINE_RESPONSE_BYTES, "wiktionary");
+      const previousCandidateCount = uniqueOnlineWords(candidates).length;
       candidates.push(
         ...((data.query && data.query.allpages) || []).map((page) => normalizeOnlineTitle(page.title))
       );
-      if (uniqueOnlineWords(candidates).length >= requestedLimit) {
+      const uniqueCandidateCount = uniqueOnlineWords(candidates).length;
+      if (uniqueCandidateCount === previousCandidateCount || uniqueCandidateCount >= requestedLimit) {
         break;
       }
 
-      continuation = data.continue || null;
+      const nextContinuation = data && data.continue;
+      continuation =
+        nextContinuation && typeof nextContinuation.apcontinue === "string"
+          ? {
+              apcontinue: nextContinuation.apcontinue.slice(0, 512),
+              continue:
+                typeof nextContinuation.continue === "string"
+                  ? nextContinuation.continue.slice(0, 64)
+                  : ""
+            }
+          : null;
       if (!continuation || !continuation.apcontinue) {
         break;
       }
@@ -5315,7 +5549,7 @@ function initApp(core) {
     if (!response.ok) {
       throw new Error(`online verification failed: ${response.status}`);
     }
-    const data = await response.json();
+    const data = await readJsonResponseLimited(response, MAX_ONLINE_RESPONSE_BYTES, "wiktionary");
     return (data.query && data.query.pages) || [];
   }
 
@@ -5347,12 +5581,12 @@ function initApp(core) {
 
   function normalizeOnlineTitle(title) {
     const word = String(title || "").trim().replace(/\s+/g, "");
-    return /^[가-힣]+$/.test(word) ? word : "";
+    return word.length <= MAX_ONLINE_WORD_LENGTH && /^[가-힣]+$/.test(word) ? word : "";
   }
 
   function normalizeOnlinePrefix(prefix) {
     const word = String(prefix || "").trim().replace(/\s+/g, "");
-    return /^[가-힣]+$/.test(word) ? word : "";
+    return word.length <= SEARCH_MAX_QUERY_LENGTH && /^[가-힣]+$/.test(word) ? word : "";
   }
 
   function matchesOnlineLookup(word, lookup) {
@@ -5417,25 +5651,13 @@ function initApp(core) {
       return;
     }
 
-    const key = elements.opendictApiKey ? normalizeOpendictApiKey(elements.opendictApiKey.value) : getOpendictApiKey();
-    if (!key) {
-      if (getOpendictProxyUrl()) {
-        // Proxy mode: no field key needed. Reflect the live lookup status when
-        // one is set, falling back to the idle "프록시 대기" label.
-        elements.opendictState.textContent = state.opendictStatus || "프록시 대기";
-      } else {
-        state.opendictStatus = "";
-        elements.opendictState.textContent = "키 없음";
-      }
-      return;
-    }
-    if (!isValidOpendictApiKey(key)) {
+    if (!getOpendictProxyUrl()) {
       state.opendictStatus = "";
-      elements.opendictState.textContent = "키 형식 확인";
+      elements.opendictState.textContent = "프록시 없음";
       return;
     }
 
-    elements.opendictState.textContent = state.opendictStatus || "키 준비됨";
+    elements.opendictState.textContent = state.opendictStatus || "프록시 대기";
   }
 
   function isOnlineLookupEnabled() {
@@ -5753,7 +5975,8 @@ function initApp(core) {
         const link = document.createElement("a");
         link.href = getWordrowStartSearchUrl(query);
         link.target = "_blank";
-        link.rel = "noopener";
+        link.rel = "noopener noreferrer";
+        link.referrerPolicy = "no-referrer";
         link.textContent = "WORDROW";
         link.setAttribute("aria-label", `${query || "Wordrow"}로 시작하는 단어를 Wordrow에서 검색`);
 
@@ -5822,7 +6045,8 @@ function initApp(core) {
     word.className = "word-link";
     word.href = `https://www.google.com/search?q=${encodeURIComponent(entry.word)}`;
     word.target = "_blank";
-    word.rel = "noopener";
+    word.rel = "noopener noreferrer";
+    word.referrerPolicy = "no-referrer";
     word.textContent = entry.word;
     const oneShotBadge = document.createElement("span");
     oneShotBadge.className = `badge ${getBadgeClass(entry)}`;
@@ -6057,7 +6281,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=start-end-filter-20260712", window.location.href)
+      new URL("./search-worker.js?v=security-hardening-20260713", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

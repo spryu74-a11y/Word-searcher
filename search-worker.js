@@ -1,11 +1,36 @@
 "use strict";
 
-const INDEX_MANIFEST_URL = "./data/search-index-manifest.json?v=search-index-v2-20260620-r4";
-const INDEX_URL = "./data/search-index.json?v=search-index-v2-20260620-r4";
+const SEARCH_INDEX_VERSION = "search-index-v2-20260713-r5";
+const INDEX_MANIFEST_URL = `./data/search-index-manifest.json?v=${SEARCH_INDEX_VERSION}`;
+const INDEX_URL = `./data/search-index.json?v=${SEARCH_INDEX_VERSION}`;
 const SHARD_BASE_URL = "./data/search-index-shards/";
-const SHARD_VERSION = "search-index-v2-20260620-r4";
+const SHARD_VERSION = SEARCH_INDEX_VERSION;
 const DEFAULT_LIMIT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 80;
+const MAX_CUSTOM_TEXT_CHARS = 4 * 1024 * 1024;
+const MAX_CUSTOM_LINES = 200000;
+const MAX_CUSTOM_ENTRIES = 100000;
+const MAX_ONLINE_CANDIDATE_WORDS = 5000;
+const MAX_USED_KEYS = 50000;
+const MAX_WORD_LENGTH = 128;
+const MAX_PAGE_SIZE = 200;
+const MAX_PAGE = 1000000;
+const MAX_TRACE_ID_LENGTH = 128;
+const MAX_INDEX_ENTRIES = 2000000;
+const MAX_MANIFEST_SHARDS = 12000;
+const MAX_SHARD_ENTRIES = 100000;
+const MAX_MANIFEST_RESPONSE_BYTES = 1024 * 1024;
+const MAX_SHARD_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_FULL_INDEX_RESPONSE_BYTES = 128 * 1024 * 1024;
+const ALLOWED_MESSAGE_TYPES = new Set([
+  "buildDefault",
+  "build",
+  "append",
+  "appendOnlineCandidates",
+  "performanceSnapshot",
+  "search",
+  "cancelSearch"
+]);
 const ENTRY_WORD = 0;
 const ENTRY_READING = 1;
 const ENTRY_LANGUAGE = 2;
@@ -24,7 +49,8 @@ const CATEGORY_ALTERNATIVE = 2;
 const CATEGORY_BLUNDER = 3;
 const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const MAX_COUNTER_REPLY_WORDS = 12;
-const FORCED_ALTERNATIVE_ENDINGS = new Set(["값"]);
+// Keep in sync with app.js and tools/build_search_index.py.
+const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨"]);
 const SHARD_CACHE_MAX = 160;
 const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RESULT_CACHE_MAX = 150;
@@ -74,7 +100,16 @@ let activeSearchController = null;
 let latestSearchId = 0;
 
 self.onmessage = (event) => {
-  const message = event.data || {};
+  const message = event && event.data;
+  const validationError = validateIncomingMessage(message);
+  if (validationError) {
+    self.postMessage({
+      type: "error",
+      id: getSafeRequestId(message && message.id),
+      message: validationError
+    });
+    return;
+  }
   if (message.type === "cancelSearch") {
     if (message.id === latestSearchId && activeSearchController) {
       activeSearchController.abort();
@@ -83,6 +118,103 @@ self.onmessage = (event) => {
   }
   handleMessage(message);
 };
+
+function getSafeRequestId(value) {
+  const id = Math.floor(Number(value));
+  return Number.isSafeInteger(id) && id > 0 ? id : 0;
+}
+
+function isMessageObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function validateBoundedString(value, maxLength, allowEmpty) {
+  return (
+    typeof value === "string" &&
+    value.length <= maxLength &&
+    (allowEmpty || value.length > 0)
+  );
+}
+
+function validateIncomingMessage(message) {
+  if (!isMessageObject(message) || !ALLOWED_MESSAGE_TYPES.has(message.type)) {
+    return "invalid worker message";
+  }
+  if (!getSafeRequestId(message.id)) {
+    return "invalid worker request id";
+  }
+
+  if (message.type === "buildDefault") {
+    return validateBoundedString(message.extraText || "", MAX_CUSTOM_TEXT_CHARS, true)
+      ? ""
+      : "custom dictionary payload too large";
+  }
+  if (message.type === "build" || message.type === "append") {
+    return validateBoundedString(message.text || "", MAX_CUSTOM_TEXT_CHARS, true)
+      ? ""
+      : "custom dictionary payload too large";
+  }
+  if (message.type === "appendOnlineCandidates") {
+    if (!Array.isArray(message.words) || message.words.length > MAX_ONLINE_CANDIDATE_WORDS) {
+      return "online candidate payload too large";
+    }
+    for (const word of message.words) {
+      if (!validateBoundedString(word, MAX_WORD_LENGTH, false)) {
+        return "invalid online candidate";
+      }
+    }
+    const lookup = message.lookup == null ? {} : message.lookup;
+    if (!isMessageObject(lookup)) {
+      return "invalid online lookup context";
+    }
+    if (lookup.prefixes != null) {
+      if (!Array.isArray(lookup.prefixes) || lookup.prefixes.length > 16) {
+        return "invalid online lookup prefixes";
+      }
+      for (const prefix of lookup.prefixes) {
+        if (!validateBoundedString(prefix, MAX_SEARCH_QUERY_LENGTH, false)) {
+          return "invalid online lookup prefix";
+        }
+      }
+    }
+    for (const key of ["query", "endReading", "exactWord"]) {
+      if (
+        lookup[key] != null &&
+        !validateBoundedString(lookup[key], MAX_SEARCH_QUERY_LENGTH, true)
+      ) {
+        return "invalid online lookup context";
+      }
+    }
+    return "";
+  }
+  if (message.type === "search") {
+    const options = message.options;
+    if (!isMessageObject(options)) {
+      return "invalid search options";
+    }
+    if (!validateBoundedString(options.query || "", MAX_SEARCH_QUERY_LENGTH, true)) {
+      return "search query too large";
+    }
+    if (!validateBoundedString(options.endQuery || "", MAX_SEARCH_QUERY_LENGTH, true)) {
+      return "search end query too large";
+    }
+    if (!Array.isArray(options.usedKeys) || options.usedKeys.length > MAX_USED_KEYS) {
+      return "used-word payload too large";
+    }
+    for (const key of options.usedKeys) {
+      if (!validateBoundedString(key, MAX_WORD_LENGTH, false)) {
+        return "invalid used-word key";
+      }
+    }
+    if (
+      message.traceId != null &&
+      !validateBoundedString(message.traceId, MAX_TRACE_ID_LENGTH, true)
+    ) {
+      return "invalid search trace id";
+    }
+  }
+  return "";
+}
 
 async function handleMessage(message) {
   try {
@@ -215,30 +347,101 @@ function isAbortError(error) {
   return Boolean(error && error.name === "AbortError");
 }
 
+async function readJsonResponseLimited(response, maxBytes, label) {
+  const limit = Math.max(1, Math.floor(Number(maxBytes)) || MAX_SHARD_RESPONSE_BYTES);
+  const contentLength = Number(response && response.headers && response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    throw new Error(`${label} response too large`);
+  }
+
+  if (
+    response &&
+    response.body &&
+    typeof response.body.getReader === "function" &&
+    typeof TextDecoder === "function"
+  ) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    let total = 0;
+    let text = "";
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        total += chunk.value ? chunk.value.byteLength : 0;
+        if (total > limit) {
+          await reader.cancel();
+          throw new Error(`${label} response too large`);
+        }
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+    } finally {
+      if (typeof reader.releaseLock === "function") {
+        reader.releaseLock();
+      }
+    }
+    return JSON.parse(text);
+  }
+
+  if (response && typeof response.text === "function") {
+    const text = await response.text();
+    const byteLength = typeof TextEncoder === "function"
+      ? new TextEncoder().encode(text).byteLength
+      : text.length * 2;
+    if (byteLength > limit) {
+      throw new Error(`${label} response too large`);
+    }
+    return JSON.parse(text);
+  }
+  return response.json();
+}
+
 async function ensureIndex() {
   if (!indexPromise) {
-    indexPromise = fetch(INDEX_MANIFEST_URL, { cache: "force-cache" })
+    indexPromise = fetch(INDEX_MANIFEST_URL, {
+      cache: "force-cache",
+      credentials: "omit",
+      redirect: "error",
+      referrerPolicy: "no-referrer"
+    })
       .then((response) => {
         if (!response.ok) {
           throw new Error("검색 인덱스 manifest를 불러오지 못했습니다");
         }
-        return response.json();
+        return readJsonResponseLimited(response, MAX_MANIFEST_RESPONSE_BYTES, "index manifest");
       })
       .then((payload) => {
         if (!payload || typeof payload !== "object") {
           throw new Error("검색 인덱스 manifest 구조가 올바르지 않습니다");
         }
+        const shardEntries = Object.entries(payload.shards || {});
+        if (shardEntries.length > MAX_MANIFEST_SHARDS) {
+          throw new Error("검색 인덱스 manifest shard 수가 너무 큽니다");
+        }
+        const total = Number(payload.total || (payload.stats && payload.stats.total) || 0);
+        if (!Number.isSafeInteger(total) || total < 0 || total > MAX_INDEX_ENTRIES) {
+          throw new Error("검색 인덱스 manifest 항목 수가 올바르지 않습니다");
+        }
         useFullIndex = false;
         shardFiles = Object.create(null);
         shardCandidateCounts = Object.create(null);
-        for (const [start, info] of Object.entries(payload.shards || {})) {
+        for (const [start, info] of shardEntries) {
           const file = info && typeof info === "object" ? info.file : "";
-          if (file) {
+          const count = Number(info && info.count);
+          if (
+            /^[가-힣]$/.test(start) &&
+            /^[0-9a-f]{4}\.json$/i.test(file) &&
+            Number.isSafeInteger(count) &&
+            count >= 0 &&
+            count <= MAX_SHARD_ENTRIES
+          ) {
             shardFiles[start] = file;
-            shardCandidateCounts[start] = Number(info.count) || 0;
+            shardCandidateCounts[start] = count;
           }
         }
-        const total = Number(payload.total || (payload.stats && payload.stats.total) || 0);
         baseEntries = [];
         baseEntries.length = total;
         baseBuckets = Object.create(null);
@@ -264,23 +467,31 @@ async function ensureIndex() {
 }
 
 function loadFullIndex() {
-  return fetch(INDEX_URL, { cache: "force-cache" })
+  return fetch(INDEX_URL, {
+    cache: "force-cache",
+    credentials: "omit",
+    redirect: "error",
+    referrerPolicy: "no-referrer"
+  })
     .then((response) => {
       if (!response.ok) {
         throw new Error("검색 인덱스를 불러오지 못했습니다");
       }
-      return response.json();
+      return readJsonResponseLimited(response, MAX_FULL_INDEX_RESPONSE_BYTES, "full search index");
     })
     .then((payload) => {
-      if (!payload || typeof payload !== "object") {
+      if (!payload || typeof payload !== "object" || !Array.isArray(payload.entries)) {
         throw new Error("검색 인덱스 구조가 올바르지 않습니다");
+      }
+      if (payload.entries.length > MAX_INDEX_ENTRIES) {
+        throw new Error("검색 인덱스 항목 수가 너무 큽니다");
       }
       useFullIndex = true;
       shardFiles = Object.create(null);
       shardCandidateCounts = Object.create(null);
       shardPromises = new Map();
       loadedShardMeta = new Map();
-      baseEntries = Array.isArray(payload.entries) ? payload.entries : [];
+      baseEntries = payload.entries;
       baseBuckets =
         payload.byFirstChar && typeof payload.byFirstChar === "object"
           ? payload.byFirstChar
@@ -329,18 +540,26 @@ async function loadShard(start, signal) {
   }
 
   if (!shardPromises.has(start)) {
-    const request = fetch(`${SHARD_BASE_URL}${file}?v=${SHARD_VERSION}`, { cache: "force-cache" })
+    const request = fetch(`${SHARD_BASE_URL}${file}?v=${SHARD_VERSION}`, {
+      cache: "force-cache",
+      credentials: "omit",
+      redirect: "error",
+      referrerPolicy: "no-referrer"
+    })
       .then((response) => {
         if (!response.ok) {
           throw new Error(`검색 shard를 불러오지 못했습니다: ${start}`);
         }
-        return response.json();
+        return readJsonResponseLimited(response, MAX_SHARD_RESPONSE_BYTES, "search shard");
       })
       .then((payload) => {
         const indices = [];
         const rows = payload && Array.isArray(payload.entries) ? payload.entries : [];
         if (!payload || typeof payload !== "object" || !Array.isArray(payload.entries)) {
-          warnWorker(`검색 shard 구조가 올바르지 않습니다: ${start}`, payload);
+          throw new Error(`검색 shard 구조가 올바르지 않습니다: ${start}`);
+        }
+        if (rows.length > MAX_SHARD_ENTRIES) {
+          throw new Error(`검색 shard 항목 수가 너무 큽니다: ${start}`);
         }
         for (const row of rows) {
           if (!Array.isArray(row) || row.length <= ENTRY_CATEGORY + 1) {
@@ -348,11 +567,18 @@ async function loadShard(start, signal) {
             continue;
           }
           const index = Number(row[0]);
-          if (!Number.isFinite(index)) {
+          if (!Number.isSafeInteger(index) || index < 0 || index >= baseEntries.length) {
             continue;
           }
           const packed = row.slice(1);
-          if (!packed[ENTRY_WORD] || !packed[ENTRY_READING]) {
+          if (
+            typeof packed[ENTRY_WORD] !== "string" ||
+            typeof packed[ENTRY_READING] !== "string" ||
+            !packed[ENTRY_WORD] ||
+            !packed[ENTRY_READING] ||
+            packed[ENTRY_WORD].length > MAX_WORD_LENGTH ||
+            packed[ENTRY_READING].length > MAX_WORD_LENGTH
+          ) {
             warnWorker(`검색 shard 필수 필드가 없어 무시했습니다: ${start}`, row);
             continue;
           }
@@ -667,8 +893,11 @@ async function searchDictionary(options, context) {
   const traceId = (context && context.traceId) || "";
   const started = now();
   throwIfAborted(signal);
-  const pageSize = Number(options.pageSize || options.limit || DEFAULT_LIMIT);
-  const page = Number(options.page || 1);
+  const pageSize = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, Math.floor(Number(options.pageSize || options.limit)) || DEFAULT_LIMIT)
+  );
+  const page = Math.min(MAX_PAGE, Math.max(1, Math.floor(Number(options.page)) || 1));
   const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
   const endReading = toReading(options.endQuery || "");
   const parseStarted = now();
@@ -921,7 +1150,10 @@ function warnWorker(message, details) {
 
 function createSearchOptions(options) {
   const usedKeySet = new Set();
-  for (const rawKey of Array.isArray(options && options.usedKeys) ? options.usedKeys : []) {
+  const usedKeys = Array.isArray(options && options.usedKeys)
+    ? options.usedKeys.slice(0, MAX_USED_KEYS)
+    : [];
+  for (const rawKey of usedKeys) {
     const key = normalizeKey(rawKey);
     if (key) {
       usedKeySet.add(key);
@@ -1829,7 +2061,20 @@ function compareIndexReading(left, right) {
 function parseCustomEntries(text) {
   const entries = [];
   let invalid = 0;
-  for (const rawLine of String(text || "").split(/\r?\n/)) {
+  const lines = String(text || "").split(/\r?\n/, MAX_CUSTOM_LINES + 1);
+  if (lines.length > MAX_CUSTOM_LINES) {
+    invalid += 1;
+    lines.length = MAX_CUSTOM_LINES;
+  }
+  for (const rawLine of lines) {
+    if (entries.length >= MAX_CUSTOM_ENTRIES) {
+      invalid += 1;
+      break;
+    }
+    if (rawLine.length > MAX_WORD_LENGTH * 2 + 8) {
+      invalid += 1;
+      continue;
+    }
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) {
       continue;
@@ -1862,7 +2107,14 @@ function parseCustomLine(line) {
     reading = reading || englishToHangul(word);
   }
 
-  if (!word || !reading || reading.length < 2 || !/^[가-힣]+$/.test(reading)) {
+  if (
+    !word ||
+    !reading ||
+    word.length > MAX_WORD_LENGTH ||
+    reading.length > MAX_WORD_LENGTH ||
+    reading.length < 2 ||
+    !/^[가-힣]+$/.test(reading)
+  ) {
     return null;
   }
 
@@ -2237,9 +2489,20 @@ function isForcedAlternativePacked(entry) {
 
 function getEntryCategory(index) {
   const entry = getPackedEntry(index);
-  return isForcedAlternativePacked(entry)
-    ? CATEGORY_ALTERNATIVE
-    : Number(entry[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+  if (isForcedAlternativePacked(entry)) {
+    return CATEGORY_ALTERNATIVE;
+  }
+  const category = Number(entry[ENTRY_CATEGORY]) || CATEGORY_CONNECTION;
+  // Older/stale shards may have retained the connection category even though
+  // counter counts already prove that this entry is a blunder.
+  if (
+    category === CATEGORY_CONNECTION &&
+    (Number(entry[ENTRY_ONE_SHOT_REPLY_COUNT]) > 0 ||
+      Number(entry[ENTRY_ALTERNATIVE_REPLY_COUNT]) > 0)
+  ) {
+    return CATEGORY_BLUNDER;
+  }
+  return category;
 }
 
 function entryKeyFromPacked(entry) {

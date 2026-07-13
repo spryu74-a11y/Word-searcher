@@ -1,0 +1,50 @@
+name: Security regression tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Run JavaScript regression tests
+        run: |
+          node logic.test.js
+          node tools/search-regression-test.js
+          node tools/search-worker-regression-test.js
+          node tools/frontend-security-test.js
+          node tools/search-worker-security-test.js
+
+      - name: Run Python security tests
+        run: |
+          python -m unittest discover -s tools -p "test_*.py" -v
+          python -m py_compile tools/opendict_proxy.py
+
+      - name: Build and verify the public deployment surface
+        run: python tools/build_secure_site.py --output dist --check
