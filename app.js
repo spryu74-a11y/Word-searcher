@@ -6202,7 +6202,7 @@ function initApp(core) {
       return "한방";
     }
     if (entry.alternativeOneShot) {
-      return "대체";
+      return "대체 한방";
     }
     if (entry.blunder) {
       return "블런더";
