@@ -1927,6 +1927,7 @@ function getCounterReplyWords(state, predicate, options, contextWords, expectedC
   if (!state.blunder) {
     return [];
   }
+  const canUseStaticReplyCategories = !options.forceDynamic && !options.hasUsedWords;
   const replyOptions = createPlayedOptions(options, state.index);
   const replyWords = [];
   const seenWords = new Set();
@@ -1958,7 +1959,13 @@ function getCounterReplyWords(state, predicate, options, contextWords, expectedC
       if (replyIndex === state.index || seen.has(replyIndex) || isUsedIndex(replyIndex, replyOptions)) {
         return;
       }
-      const replyState = getEntryState(replyIndex, replyOptions);
+      const replyState = canUseStaticReplyCategories
+        ? {
+            word: String(getPackedEntry(replyIndex)[ENTRY_WORD]),
+            oneShot: getEntryCategory(replyIndex) === CATEGORY_ONE_SHOT,
+            alternativeOneShot: getEntryCategory(replyIndex) === CATEGORY_ALTERNATIVE
+          }
+        : getEntryState(replyIndex, replyOptions);
       if (!predicate(replyState)) {
         return;
       }
