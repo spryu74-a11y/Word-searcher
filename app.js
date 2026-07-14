@@ -2266,14 +2266,13 @@ function initApp(core) {
   const THEME_STORAGE_KEY = "kkung-theme-v1";
   const DEFAULT_THEME = Object.freeze({
     background: "#313338",
-    sidebar: "#2b2d31",
     gradient: "discord"
   });
   const THEME_PRESETS = Object.freeze({
-    discord: { background: "#313338", sidebar: "#2b2d31" },
-    midnight: { background: "#171927", sidebar: "#202333" },
-    slate: { background: "#343b4b", sidebar: "#242a36" },
-    light: { background: "#f2f3f5", sidebar: "#ffffff" }
+    discord: { background: "#313338", end: "#1f2023" },
+    midnight: { background: "#171927", end: "#0e1018" },
+    slate: { background: "#343b4b", end: "#232a37" },
+    light: { background: "#545962", end: "#3c4047" }
   });
   // API sources are build-time inputs. Search must never wait for a network
   // lookup after the bundled dictionary has been built.
@@ -2404,7 +2403,6 @@ function initApp(core) {
     settingsOneShotOnly: document.getElementById("settingsOneShotOnly"),
     settingsSearch: document.getElementById("settingsSearch"),
     themeBackgroundColor: document.getElementById("themeBackgroundColor"),
-    themeSidebarColor: document.getElementById("themeSidebarColor"),
     themeBackgroundGradient: document.getElementById("themeBackgroundGradient"),
     themePreview: document.getElementById("themePreview"),
     resetTheme: document.getElementById("resetTheme"),
@@ -3007,9 +3005,6 @@ function initApp(core) {
   }
   if (elements.themeBackgroundColor) {
     addSearchEventListener(elements.themeBackgroundColor, "input", handleThemeColorInput);
-  }
-  if (elements.themeSidebarColor) {
-    addSearchEventListener(elements.themeSidebarColor, "input", handleThemeColorInput);
   }
   if (elements.themeBackgroundGradient) {
     addSearchEventListener(elements.themeBackgroundGradient, "change", handleThemeGradientChange);
@@ -3866,7 +3861,6 @@ function initApp(core) {
       const preset = THEME_PRESETS[gradient];
       return {
         background: normalizeThemeColor(parsed && parsed.background, preset ? preset.background : DEFAULT_THEME.background),
-        sidebar: normalizeThemeColor(parsed && parsed.sidebar, preset ? preset.sidebar : DEFAULT_THEME.sidebar),
         gradient
       };
     } catch {
@@ -3887,41 +3881,37 @@ function initApp(core) {
     const background = normalizeThemeColor(current.background, DEFAULT_THEME.background);
     return {
       background,
-      sidebar: current.gradient === "solid"
+      end: current.gradient === "solid"
         ? background
-        : normalizeThemeColor(current.sidebar, DEFAULT_THEME.sidebar)
+        : `color-mix(in srgb, ${background} 68%, #000000)`
     };
   }
 
   function applyTheme(theme) {
     const colors = getThemeColors(theme);
     const root = document.documentElement;
-    root.style.setProperty("--guild", colors.sidebar);
-    root.style.setProperty("--sidebar", colors.sidebar);
     root.style.setProperty("--chat", colors.background);
-    root.style.setProperty("--chat-soft", colors.background);
-    root.style.setProperty("--panel", colors.sidebar);
+    root.style.setProperty("--chat-soft", colors.end);
     root.style.setProperty(
       "--theme-gradient",
       theme && theme.gradient === "solid"
         ? colors.background
-        : `linear-gradient(135deg, ${colors.background}, ${colors.sidebar})`
+        : `linear-gradient(135deg, ${colors.background}, ${colors.end})`
     );
     if (elements.themePreview) {
       elements.themePreview.style.background =
         theme && theme.gradient === "solid"
           ? colors.background
-          : `linear-gradient(135deg, ${colors.background}, ${colors.sidebar})`;
+          : `linear-gradient(135deg, ${colors.background}, ${colors.end})`;
     }
   }
 
   function syncThemeControls() {
-    if (!elements.themeBackgroundColor || !elements.themeSidebarColor || !elements.themeBackgroundGradient) {
+    if (!elements.themeBackgroundColor || !elements.themeBackgroundGradient) {
       return;
     }
     const colors = getThemeColors(state.theme);
     elements.themeBackgroundColor.value = colors.background;
-    elements.themeSidebarColor.value = colors.sidebar;
     elements.themeBackgroundGradient.value = normalizeThemeGradient(state.theme.gradient);
   }
 
@@ -3930,11 +3920,7 @@ function initApp(core) {
       elements.themeBackgroundColor && elements.themeBackgroundColor.value,
       DEFAULT_THEME.background
     );
-    const sidebar = normalizeThemeColor(
-      elements.themeSidebarColor && elements.themeSidebarColor.value,
-      DEFAULT_THEME.sidebar
-    );
-    state.theme = { background, sidebar, gradient: "custom" };
+    state.theme = { background, gradient: "custom" };
     saveThemeSettings();
     applyTheme(state.theme);
     if (elements.themeBackgroundGradient) {
@@ -3949,10 +3935,6 @@ function initApp(core) {
       background: preset ? preset.background : normalizeThemeColor(
         elements.themeBackgroundColor && elements.themeBackgroundColor.value,
         DEFAULT_THEME.background
-      ),
-      sidebar: preset ? preset.sidebar : normalizeThemeColor(
-        elements.themeSidebarColor && elements.themeSidebarColor.value,
-        DEFAULT_THEME.sidebar
       ),
       gradient
     };
