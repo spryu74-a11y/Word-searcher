@@ -33,6 +33,8 @@ def build_shards() -> None:
             entry = entries[index]
             shard_entries.append([index, *entry])
 
+        shard_ends = sorted({str(entries[index][8]) for index in indices if entries[index][8]})
+
         shard_payload = {
             "version": 2,
             "start": start,
@@ -46,6 +48,7 @@ def build_shards() -> None:
         manifest_shards[start] = {
             "file": file_name,
             "count": len(shard_entries),
+            "ends": shard_ends,
         }
 
     manifest = {

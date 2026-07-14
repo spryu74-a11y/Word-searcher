@@ -215,6 +215,14 @@ async function main() {
     });
     assert.strictEqual(customBuilt.type, "built");
 
+    const endOnlySearch = await request("search", {
+      options: searchOptions("", [], 0, "\ud7a3")
+    });
+    assert.ok(endOnlySearch.payload.results.length > 0);
+    assert.ok(endOnlySearch.payload.results.every((entry) => entry.reading.endsWith("\ud7a3")));
+    assert.strictEqual(endOnlySearch.payload.queryInfo.reading, "");
+    assert.strictEqual(endOnlySearch.payload.queryInfo.endReading, "\ud7a3");
+
     const endHihSearch = await request("search", {
       options: searchOptions("\ub05d", [], 0, "\ud7a3")
     });

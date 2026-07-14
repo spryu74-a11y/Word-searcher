@@ -2114,6 +2114,22 @@
     );
   }
 
+  function searchByEnd(dictionary, endReading, options) {
+    const candidates = (dictionary.entries || []).filter((entry) =>
+      entry.reading.endsWith(endReading)
+    );
+    return collectResults(
+      includeExactCandidates(dictionary, candidates, options),
+      options.oneShotOnly,
+      options.pageSize,
+      options.page,
+      options.exactWord,
+      options.exactReading,
+      dictionary,
+      options
+    );
+  }
+
   function includeExactCandidates(dictionary, candidates, options) {
     const exactEntries = getExactQueryEntries(dictionary, options);
     if (!exactEntries.length) {
@@ -2189,7 +2205,9 @@
       usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
     };
     const collected =
-      sourceMode === "reply"
+      !queryInfo.reading && endReading
+        ? searchByEnd(dictionary, endReading, searchOptions)
+        : sourceMode === "reply"
         ? searchByReply(dictionary, queryInfo.starts, searchOptions)
         : searchByPrefixes(dictionary, queryInfo.prefixes, searchOptions);
 
@@ -3383,9 +3401,18 @@ function initApp(core) {
       maxLength: SEARCH_MAX_QUERY_LENGTH
     });
     const endQuery = core.normalizeSearchQuery(elements.endQueryInput.value);
-    if (!queryValidation.ok || !endQuery) {
+    const startIsEmpty = queryValidation.reason === "empty";
+    if (!queryValidation.ok && !startIsEmpty) {
       return {
         ...queryValidation,
+        endQuery: "",
+        endReading: ""
+      };
+    }
+    if (!endQuery) {
+      return {
+        ...queryValidation,
+        ok: queryValidation.ok,
         endQuery: "",
         endReading: ""
       };
@@ -3410,6 +3437,9 @@ function initApp(core) {
 
     return {
       ...queryValidation,
+      ok: queryValidation.ok || startIsEmpty,
+      query: queryValidation.ok ? queryValidation.query : "",
+      reading: queryValidation.ok ? queryValidation.reading : "",
       endQuery: endValidation.query,
       endReading: endValidation.reading
     };
@@ -3422,7 +3452,8 @@ function initApp(core) {
     }
     const validation = getSearchInputValidation();
     const query = validation.query;
-    if (!validation.ok || query.length < SEARCH_MIN_QUERY_LENGTH) {
+    const endOnlyQuery = !query && Boolean(validation.endReading);
+    if (!validation.ok || (!endOnlyQuery && query.length < SEARCH_MIN_QUERY_LENGTH)) {
       state.pendingSearch = false;
       state.searchInFlight = false;
       state.searchRequestId = 0;
@@ -6483,7 +6514,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260714-r6", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260714-r7", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

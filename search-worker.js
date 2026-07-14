@@ -1,6 +1,6 @@
 "use strict";
 
-const SEARCH_INDEX_VERSION = "search-index-v2-20260714-r1";
+const SEARCH_INDEX_VERSION = "search-index-v2-20260714-r2";
 const INDEX_MANIFEST_URL = `./data/search-index-manifest.json?v=${SEARCH_INDEX_VERSION}`;
 const INDEX_URL = `./data/search-index.json?v=${SEARCH_INDEX_VERSION}`;
 const SHARD_BASE_URL = "./data/search-index-shards/";
@@ -73,6 +73,7 @@ let indexPromise = null;
 let useFullIndex = false;
 let shardFiles = Object.create(null);
 let shardCandidateCounts = Object.create(null);
+let shardStartsByEnd = new Map();
 let shardPromises = new Map();
 let baseEntries = [];
 let baseBuckets = Object.create(null);
@@ -448,6 +449,7 @@ async function ensureIndex() {
         useFullIndex = false;
         shardFiles = Object.create(null);
         shardCandidateCounts = Object.create(null);
+        shardStartsByEnd = new Map();
         for (const [start, info] of shardEntries) {
           const file = info && typeof info === "object" ? info.file : "";
           const count = Number(info && info.count);
@@ -460,6 +462,17 @@ async function ensureIndex() {
           ) {
             shardFiles[start] = file;
             shardCandidateCounts[start] = count;
+            for (const end of Array.isArray(info && info.ends) ? info.ends : []) {
+              if (!isHangulSyllable(end)) {
+                continue;
+              }
+              const starts = shardStartsByEnd.get(end);
+              if (starts) {
+                starts.push(start);
+              } else {
+                shardStartsByEnd.set(end, [start]);
+              }
+            }
           }
         }
         baseEntries = [];
@@ -509,6 +522,7 @@ function loadFullIndex() {
       useFullIndex = true;
       shardFiles = Object.create(null);
       shardCandidateCounts = Object.create(null);
+      shardStartsByEnd = new Map();
       shardPromises = new Map();
       loadedShardMeta = new Map();
       baseEntries = payload.entries;
@@ -945,8 +959,10 @@ async function searchDictionary(options, context) {
   const page = Math.min(MAX_PAGE, Math.max(1, Math.floor(Number(options.page)) || 1));
   const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
   const endReading = toReading(options.endQuery || "");
+  const rawQuery = String(options.query || "").trim();
+  const endOnlyQuery = !rawQuery && Boolean(endReading);
   const parseStarted = now();
-  if (!validateSearchQuery(options.query)) {
+  if (!validateSearchQuery(options.query) && !endOnlyQuery) {
     const queryInfo = {
       ...getQueryInfo("", sourceMode),
       endReading
@@ -983,7 +999,7 @@ async function searchDictionary(options, context) {
     return result;
   }
 
-  if (!queryInfo.reading) {
+  if (!queryInfo.reading && !endOnlyQuery) {
     return {
       queryInfo,
       ...createEmptyResults(pageSize, page),
@@ -993,15 +1009,18 @@ async function searchDictionary(options, context) {
   }
 
   const t0 = now();
-  const searchShardStarts = getSearchShardStarts(queryInfo, sourceMode);
+  const searchShardStarts = endOnlyQuery
+    ? getEndSearchShardStarts(endReading)
+    : getSearchShardStarts(queryInfo, sourceMode);
   await loadShards(searchShardStarts, signal);
   const shardMs = elapsed(t0);
   throwIfAborted(signal);
 
   const t1 = now();
   const searchOptions = createSearchOptions(options);
-  const candidates =
-    sourceMode === "reply"
+  const candidates = endOnlyQuery
+    ? searchByEnd(endReading)
+    : sourceMode === "reply"
       ? searchByReply(queryInfo.starts)
       : searchByPrefixes(queryInfo.prefixes);
   const merged = includeExactCandidates(candidates, exactWord, exactReading);
@@ -1318,6 +1337,40 @@ function getCounterShardStarts(states) {
     }
   }
   return Array.from(starts);
+}
+
+function getEndSearchShardStarts(endReading) {
+  if (useFullIndex) {
+    return [];
+  }
+  const final = getLastSyllable(endReading);
+  return final ? (shardStartsByEnd.get(final) || []).slice() : [];
+}
+
+function searchByEnd(endReading) {
+  const final = getLastSyllable(endReading);
+  if (!final) {
+    return [];
+  }
+  const candidates = [];
+  const seen = new Set();
+  for (const index of baseByLast.get(final) || []) {
+    if (seen.has(index) || !getPackedEntry(index)) {
+      continue;
+    }
+    if (entryReading(index).endsWith(endReading)) {
+      seen.add(index);
+      candidates.push(index);
+    }
+  }
+  for (const index of getCustomIndices()) {
+    if (seen.has(index) || !entryReading(index).endsWith(endReading)) {
+      continue;
+    }
+    seen.add(index);
+    candidates.push(index);
+  }
+  return candidates;
 }
 
 function searchByPrefixes(prefixes) {
