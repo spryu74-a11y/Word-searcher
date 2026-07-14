@@ -2263,6 +2263,18 @@ function initApp(core) {
   const USED_WORDS_STORAGE_KEY = "kkung-used-words-v1";
   const USED_WORD_CONTROLS_STORAGE_KEY = "kkung-used-word-controls-v1";
   const LANGUAGE_STORAGE_KEY = "kkung-language-v1";
+  const THEME_STORAGE_KEY = "kkung-theme-v1";
+  const DEFAULT_THEME = Object.freeze({
+    background: "#313338",
+    sidebar: "#2b2d31",
+    gradient: "discord"
+  });
+  const THEME_PRESETS = Object.freeze({
+    discord: { background: "#313338", sidebar: "#2b2d31" },
+    midnight: { background: "#171927", sidebar: "#202333" },
+    slate: { background: "#343b4b", sidebar: "#242a36" },
+    light: { background: "#f2f3f5", sidebar: "#ffffff" }
+  });
   // API sources are build-time inputs. Search must never wait for a network
   // lookup after the bundled dictionary has been built.
   const STATIC_WORD_PACK_MODE = true;
@@ -2360,7 +2372,6 @@ function initApp(core) {
     "PageUp",
     "PageDown"
   ]);
-  const REQUIRED_SUPPLEMENT_WORDS = ["듸레"];
   const DICTIONARY_DRAWER_QUERY = "(max-width: 1180px)";
   const MOBILE_QUERY = "(max-width: 780px)";
   const elements = {
@@ -2392,6 +2403,11 @@ function initApp(core) {
     settingsLanguage: document.getElementById("settingsLanguage"),
     settingsOneShotOnly: document.getElementById("settingsOneShotOnly"),
     settingsSearch: document.getElementById("settingsSearch"),
+    themeBackgroundColor: document.getElementById("themeBackgroundColor"),
+    themeSidebarColor: document.getElementById("themeSidebarColor"),
+    themeBackgroundGradient: document.getElementById("themeBackgroundGradient"),
+    themePreview: document.getElementById("themePreview"),
+    resetTheme: document.getElementById("resetTheme"),
     statEn: document.getElementById("statEn"),
     statKo: document.getElementById("statKo"),
     statAlt: document.getElementById("statAlt"),
@@ -2402,15 +2418,15 @@ function initApp(core) {
   };
 
   const defaultDictionaryTextUrl = new URL(
-    "./data/default-dictionary.txt?v=offline-text-pack-20260617",
+    "./data/default-dictionary.txt?v=offline-text-pack-20260714-r1",
     window.location.href
   ).toString();
   const defaultDictionaryMetaUrl = new URL(
-    "./data/default-dictionary-meta.json?v=offline-text-pack-20260617",
+    "./data/default-dictionary-meta.json?v=offline-text-pack-20260714-r1",
     window.location.href
   ).toString();
   const defaultDictionaryScriptUrl = new URL(
-    "./data/default-dictionary.js?v=offline-woorimalsam-20260617",
+    "./data/default-dictionary.js?v=offline-woorimalsam-20260714-r1",
     window.location.href
   ).toString();
   const fallbackDefaultText = core.FALLBACK_DICTIONARY;
@@ -2476,6 +2492,7 @@ function initApp(core) {
     showUsedControls: true,
     sourceMode: "starts",
     language: initialLanguage,
+    theme: loadThemeSettings(),
     usedWordIds: loadUsedWordIds(),
     usedVersion: 0,
     virtualResults: null,
@@ -2501,6 +2518,7 @@ function initApp(core) {
   elements.defaultSourceMeta.textContent = "오프라인 단어팩 로딩";
   updateOnlineState();
   updateOpendictState();
+  applyTheme(state.theme);
 
   attachWorkerHandlers(state.worker);
   attachGlobalErrorHandlers();
@@ -2987,6 +3005,23 @@ function initApp(core) {
       scheduleSearch(0, true);
     });
   }
+  if (elements.themeBackgroundColor) {
+    addSearchEventListener(elements.themeBackgroundColor, "input", handleThemeColorInput);
+  }
+  if (elements.themeSidebarColor) {
+    addSearchEventListener(elements.themeSidebarColor, "input", handleThemeColorInput);
+  }
+  if (elements.themeBackgroundGradient) {
+    addSearchEventListener(elements.themeBackgroundGradient, "change", handleThemeGradientChange);
+  }
+  if (elements.resetTheme) {
+    addSearchEventListener(elements.resetTheme, "click", () => {
+      state.theme = { ...DEFAULT_THEME };
+      saveThemeSettings();
+      applyTheme(state.theme);
+      syncThemeControls();
+    });
+  }
   if (elements.settingsSearch) {
     elements.settingsSearch.addEventListener("input", filterSettings);
   }
@@ -3159,8 +3194,8 @@ function initApp(core) {
       type: "buildDefault",
       id: ++state.requestId,
       extraText,
-      // The built-in 듸레 supplement must not force the 917k-entry dynamic
-      // classifier. Only user-entered text needs live recalculation.
+      // Only user-entered text needs live recalculation; the bundled pack
+      // already contains the built-in terms with their indexed categories.
       dynamicCustom: Boolean(
         String(elements.customDictionary.value || "").trim() ||
         String(state.fileText || "").trim()
@@ -3169,7 +3204,7 @@ function initApp(core) {
   }
 
   function getDictionaryExtraText() {
-    const extraText = [REQUIRED_SUPPLEMENT_WORDS.join("\n"), elements.customDictionary.value, state.fileText]
+    const extraText = [elements.customDictionary.value, state.fileText]
       .filter(Boolean)
       .join("\n");
     const boundedText = extraText.length <= MAX_CUSTOM_DICTIONARY_TOTAL_CHARS
@@ -3811,6 +3846,121 @@ function initApp(core) {
     scheduleSearch(0);
   }
 
+  function normalizeThemeColor(value, fallback) {
+    const color = String(value || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
+  }
+
+  function normalizeThemeGradient(value) {
+    const gradient = String(value || "").trim().toLowerCase();
+    return gradient === "custom" || gradient === "solid" || THEME_PRESETS[gradient]
+      ? gradient
+      : DEFAULT_THEME.gradient;
+  }
+
+  function loadThemeSettings() {
+    try {
+      const raw = readLocalStorage(THEME_STORAGE_KEY, "");
+      const parsed = raw ? JSON.parse(raw) : {};
+      const gradient = normalizeThemeGradient(parsed && parsed.gradient);
+      const preset = THEME_PRESETS[gradient];
+      return {
+        background: normalizeThemeColor(parsed && parsed.background, preset ? preset.background : DEFAULT_THEME.background),
+        sidebar: normalizeThemeColor(parsed && parsed.sidebar, preset ? preset.sidebar : DEFAULT_THEME.sidebar),
+        gradient
+      };
+    } catch {
+      return { ...DEFAULT_THEME };
+    }
+  }
+
+  function saveThemeSettings() {
+    writeLocalStorage(THEME_STORAGE_KEY, JSON.stringify(state.theme));
+  }
+
+  function getThemeColors(theme) {
+    const current = theme || DEFAULT_THEME;
+    const preset = THEME_PRESETS[current.gradient];
+    if (preset) {
+      return preset;
+    }
+    const background = normalizeThemeColor(current.background, DEFAULT_THEME.background);
+    return {
+      background,
+      sidebar: current.gradient === "solid"
+        ? background
+        : normalizeThemeColor(current.sidebar, DEFAULT_THEME.sidebar)
+    };
+  }
+
+  function applyTheme(theme) {
+    const colors = getThemeColors(theme);
+    const root = document.documentElement;
+    root.style.setProperty("--guild", colors.sidebar);
+    root.style.setProperty("--sidebar", colors.sidebar);
+    root.style.setProperty("--chat", colors.background);
+    root.style.setProperty("--chat-soft", colors.background);
+    root.style.setProperty("--panel", colors.sidebar);
+    root.style.setProperty(
+      "--theme-gradient",
+      theme && theme.gradient === "solid"
+        ? colors.background
+        : `linear-gradient(135deg, ${colors.background}, ${colors.sidebar})`
+    );
+    if (elements.themePreview) {
+      elements.themePreview.style.background =
+        theme && theme.gradient === "solid"
+          ? colors.background
+          : `linear-gradient(135deg, ${colors.background}, ${colors.sidebar})`;
+    }
+  }
+
+  function syncThemeControls() {
+    if (!elements.themeBackgroundColor || !elements.themeSidebarColor || !elements.themeBackgroundGradient) {
+      return;
+    }
+    const colors = getThemeColors(state.theme);
+    elements.themeBackgroundColor.value = colors.background;
+    elements.themeSidebarColor.value = colors.sidebar;
+    elements.themeBackgroundGradient.value = normalizeThemeGradient(state.theme.gradient);
+  }
+
+  function handleThemeColorInput(event) {
+    const background = normalizeThemeColor(
+      elements.themeBackgroundColor && elements.themeBackgroundColor.value,
+      DEFAULT_THEME.background
+    );
+    const sidebar = normalizeThemeColor(
+      elements.themeSidebarColor && elements.themeSidebarColor.value,
+      DEFAULT_THEME.sidebar
+    );
+    state.theme = { background, sidebar, gradient: "custom" };
+    saveThemeSettings();
+    applyTheme(state.theme);
+    if (elements.themeBackgroundGradient) {
+      elements.themeBackgroundGradient.value = "custom";
+    }
+  }
+
+  function handleThemeGradientChange() {
+    const gradient = normalizeThemeGradient(elements.themeBackgroundGradient && elements.themeBackgroundGradient.value);
+    const preset = THEME_PRESETS[gradient];
+    state.theme = {
+      background: preset ? preset.background : normalizeThemeColor(
+        elements.themeBackgroundColor && elements.themeBackgroundColor.value,
+        DEFAULT_THEME.background
+      ),
+      sidebar: preset ? preset.sidebar : normalizeThemeColor(
+        elements.themeSidebarColor && elements.themeSidebarColor.value,
+        DEFAULT_THEME.sidebar
+      ),
+      gradient
+    };
+    saveThemeSettings();
+    applyTheme(state.theme);
+    syncThemeControls();
+  }
+
   function syncSettingsControls() {
     if (elements.settingsLanguage) {
       elements.settingsLanguage.value = state.language;
@@ -3818,6 +3968,7 @@ function initApp(core) {
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.checked = elements.oneShotOnly.checked;
     }
+    syncThemeControls();
     applyUsedControlsVisibility();
     filterSettings();
   }

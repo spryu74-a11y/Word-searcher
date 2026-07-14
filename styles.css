@@ -31,6 +31,7 @@
   --quiet: #949ba4;
   --accent: #5865f2;
   --accent-hover: #4752c4;
+  --theme-gradient: linear-gradient(135deg, #5865f2, #7289da);
   --green: #23a559;
   --yellow: #f0b232;
   --red: #f23f42;
@@ -231,6 +232,7 @@ button {
 }
 
 .server-header {
+  position: relative;
   justify-content: space-between;
   gap: 10px;
   padding: 0 14px;
@@ -256,10 +258,27 @@ button {
   white-space: nowrap;
 }
 
+.server-header span {
+  padding-right: 14px;
+}
+
+.server-header::after {
+  content: "⌄";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  transform: translateY(-55%);
+}
+
 .channel-list {
   min-width: 0;
   overflow: auto;
   padding: 12px 8px;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
 }
 
 .settings-sidebar-content {
@@ -282,7 +301,8 @@ body.settings-channel .settings-sidebar-content {
   color: var(--quiet);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .channel-item,
@@ -319,11 +339,22 @@ body.settings-channel .settings-sidebar-content {
   color: var(--text);
 }
 
+.channel-item:hover,
+.channel-item.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--sidebar));
+}
+
 .stat-line {
   grid-template-columns: 1fr auto;
   margin-top: 2px;
+  border-radius: 4px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.stat-line:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--sidebar));
+  color: var(--text);
 }
 
 .stat-line strong {
@@ -346,7 +377,7 @@ body.settings-channel .settings-sidebar-content {
   min-width: 0;
   min-height: 0;
   height: 100%;
-  background: var(--chat);
+  background: var(--theme-gradient);
 }
 
 .chat-header {
@@ -1189,6 +1220,37 @@ body.settings-channel .member-panel {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
+}
+
+.theme-settings {
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.theme-preview {
+  height: 48px;
+  margin: 0 0 8px;
+  border-radius: 8px;
+  background: var(--theme-gradient);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.settings-color-row input[type="color"] {
+  width: 42px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.theme-reset-button {
+  width: 100%;
+  margin-top: 8px;
 }
 
 .settings-action-button {

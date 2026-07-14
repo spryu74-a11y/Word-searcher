@@ -16,7 +16,7 @@
       as="font"
       type="font/woff"
     />
-    <link rel="stylesheet" href="./styles.css?v=start-end-filter-20260712" />
+    <link rel="stylesheet" href="./styles.css?v=discord-theme-20260714-r2" />
   </head>
   <body>
     <div class="discord-shell">
@@ -38,7 +38,7 @@
 
       <aside class="channel-sidebar" aria-label="채널">
         <header class="server-header">
-          <strong class="server-title-search">끝말잇기 치트서버</strong>
+          <strong class="server-title-search">검색기</strong>
           <strong class="server-title-settings">설정</strong>
           <span id="dictionaryState">단어장 로딩</span>
         </header>
@@ -220,6 +220,31 @@
             </label>
           </div>
 
+          <div class="settings-section theme-settings" data-settings-text="배경 색상 그라데이션 커스터마이징">
+            <h3>외관</h3>
+            <div class="theme-preview" id="themePreview" aria-hidden="true"></div>
+            <label class="settings-row settings-color-row" for="themeBackgroundColor">
+              <span>배경 색상</span>
+              <input id="themeBackgroundColor" type="color" value="#313338" aria-label="배경 색상" />
+            </label>
+            <label class="settings-row settings-color-row" for="themeSidebarColor">
+              <span>사이드바 색상</span>
+              <input id="themeSidebarColor" type="color" value="#2b2d31" aria-label="사이드바 색상" />
+            </label>
+            <label class="settings-row" for="themeBackgroundGradient">
+              <span>배경 그라데이션</span>
+              <select id="themeBackgroundGradient">
+                <option value="discord">디스코드 다크</option>
+                <option value="midnight">미드나이트</option>
+                <option value="slate">슬레이트</option>
+                <option value="light">라이트</option>
+                <option value="custom">커스텀 색상</option>
+                <option value="solid">단색</option>
+              </select>
+            </label>
+            <button class="secondary-button settings-action-button theme-reset-button" id="resetTheme" type="button">기본 테마</button>
+          </div>
+
         </section>
 
         <section class="source-block">
@@ -262,6 +287,6 @@
       <a href="https://creativecommons.org/licenses/by-sa/2.0/kr/deed.ko" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">CC BY-SA 2.0</a>
     </footer>
 
-    <script src="./app.js?v=instant-search-20260714-r4"></script>
+    <script src="./app.js?v=discord-theme-20260714-r2"></script>
   </body>
 </html>

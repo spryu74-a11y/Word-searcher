@@ -79,6 +79,13 @@ async function main() {
     const built = await request("buildDefault", { extraText: "" });
     assert.strictEqual(built.type, "built");
 
+    const duireSearch = await request("search", {
+      options: searchOptions("\ub4f8\ub808", [], 0)
+    });
+    const duire = duireSearch.payload.results.find((entry) => entry.word === "\ub4f8\ub808");
+    assert.ok(duire, "듸레 must be returned from the static dictionary pack");
+    assert.strictEqual(duire.oneShot, false, "듸레 must not be classified as a one-shot word");
+
     const valueSearch = await request("search", { options: searchOptions("\uac12", [], 0) });
     const standardValueSearch = await request("search", { options: searchOptions("\ud45c\uc900\uac12", [], 0) });
     const valueTable = valueSearch.payload.results.find((entry) => entry.word === "\uac12\ud45c");
