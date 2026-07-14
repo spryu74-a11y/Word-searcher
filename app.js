@@ -2114,22 +2114,6 @@
     );
   }
 
-  function searchByEnd(dictionary, endReading, options) {
-    const candidates = (dictionary.entries || []).filter((entry) =>
-      entry.reading.endsWith(endReading)
-    );
-    return collectResults(
-      includeExactCandidates(dictionary, candidates, options),
-      options.oneShotOnly,
-      options.pageSize,
-      options.page,
-      options.exactWord,
-      options.exactReading,
-      dictionary,
-      options
-    );
-  }
-
   function includeExactCandidates(dictionary, candidates, options) {
     const exactEntries = getExactQueryEntries(dictionary, options);
     if (!exactEntries.length) {
@@ -2205,9 +2189,7 @@
       usedStartCounts: createUsedStartCounts(dictionary, usedKeySet)
     };
     const collected =
-      !queryInfo.reading && endReading
-        ? searchByEnd(dictionary, endReading, searchOptions)
-        : sourceMode === "reply"
+      sourceMode === "reply"
         ? searchByReply(dictionary, queryInfo.starts, searchOptions)
         : searchByPrefixes(dictionary, queryInfo.prefixes, searchOptions);
 
@@ -2638,8 +2620,7 @@ function initApp(core) {
       state.searchInFlight = false;
       state.searchAbortController = null;
       const currentQuery = String(elements.queryInput.value || "").trim();
-      const currentEndQuery = String(elements.endQueryInput.value || "").trim();
-      if (!currentQuery && !currentEndQuery) {
+      if (!currentQuery) {
         state.pendingSearch = false;
         state.lastRenderedSearchSignature = "";
         renderStartScreen();
@@ -2857,7 +2838,6 @@ function initApp(core) {
     state.worker = createInlineWorkerFallback(core, {
       textUrl: defaultDictionaryTextUrl,
       metaUrl: defaultDictionaryMetaUrl,
-      scriptUrl: defaultDictionaryScriptUrl,
       fallbackText: fallbackDefaultText
     });
     attachWorkerHandlers(state.worker);
@@ -3358,8 +3338,7 @@ function initApp(core) {
 
     const validation = getSearchInputValidation();
     const query = validation.query;
-    const endOnlyQuery = !query && Boolean(validation.endReading);
-    const nextSignature = query || endOnlyQuery ? getSearchSignature(query) : "";
+    const nextSignature = query ? getSearchSignature(query) : "";
     if (!validation.ok) {
       cancelActiveSearch(validation.reason === "empty" ? "empty-query" : "invalid-query");
       window.clearTimeout(state.searchTimer);
@@ -3379,7 +3358,7 @@ function initApp(core) {
     if (state.searchInFlight && nextSignature && nextSignature !== state.searchSignature) {
       cancelActiveSearch("superseded");
     }
-    if ((query && query.length >= SEARCH_MIN_QUERY_LENGTH) || endOnlyQuery) {
+    if (query && query.length >= SEARCH_MIN_QUERY_LENGTH) {
       if (state.appLoading && !state.workerReady) {
         renderLoadingScreen("단어팩을 불러오는 중입니다");
       } else {
@@ -3404,18 +3383,9 @@ function initApp(core) {
       maxLength: SEARCH_MAX_QUERY_LENGTH
     });
     const endQuery = core.normalizeSearchQuery(elements.endQueryInput.value);
-    const startIsEmpty = queryValidation.reason === "empty";
-    if (!queryValidation.ok && !startIsEmpty) {
+    if (!queryValidation.ok || !endQuery) {
       return {
         ...queryValidation,
-        endQuery: "",
-        endReading: ""
-      };
-    }
-    if (!endQuery) {
-      return {
-        ...queryValidation,
-        ok: queryValidation.ok,
         endQuery: "",
         endReading: ""
       };
@@ -3440,9 +3410,6 @@ function initApp(core) {
 
     return {
       ...queryValidation,
-      ok: queryValidation.ok || startIsEmpty,
-      query: queryValidation.ok ? queryValidation.query : "",
-      reading: queryValidation.ok ? queryValidation.reading : "",
       endQuery: endValidation.query,
       endReading: endValidation.reading
     };
@@ -3455,8 +3422,7 @@ function initApp(core) {
     }
     const validation = getSearchInputValidation();
     const query = validation.query;
-    const endOnlyQuery = !query && Boolean(validation.endReading);
-    if (!validation.ok || (!endOnlyQuery && query.length < SEARCH_MIN_QUERY_LENGTH)) {
+    if (!validation.ok || query.length < SEARCH_MIN_QUERY_LENGTH) {
       state.pendingSearch = false;
       state.searchInFlight = false;
       state.searchRequestId = 0;
@@ -6336,7 +6302,7 @@ function initApp(core) {
       const isUsed = setUsedWord(entry, input.checked);
       input.checked = isUsed;
       row.classList.toggle("used-word", isUsed);
-      scheduleSearch(80);
+      scheduleSearch(0);
     });
 
     const text = document.createElement("span");
@@ -6515,18 +6481,12 @@ function createSearchWorker(core, dictionaryAssets) {
   if (typeof Worker === "undefined") {
     return createInlineWorkerFallback(core, dictionaryAssets);
   }
-  const workerUrl = new URL(
-    "./search-worker.js?v=instant-search-20260714-r9",
-    window.location.href
-  ).toString();
   try {
-    return new Worker(workerUrl);
+    return new Worker(
+      new URL("./search-worker.js?v=instant-search-20260714-r5", window.location.href)
+    );
   } catch {
-    try {
-      return new Worker(new URL(workerUrl));
-    } catch {
-      return createInlineWorkerFallback(core, dictionaryAssets);
-    }
+    return createInlineWorkerFallback(core, dictionaryAssets);
   }
 }
 
@@ -6535,61 +6495,9 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
     dictionaryAssets && typeof dictionaryAssets === "object"
       ? dictionaryAssets
       : { fallbackText: dictionaryAssets };
-  const embeddedDictionaryText = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
-  const fallbackDefaultText =
-    embeddedDictionaryText.length > String(core.FALLBACK_DICTIONARY || "").length
-      ? embeddedDictionaryText
-      : assets.fallbackText || core.FALLBACK_DICTIONARY;
-  let defaultTextPromise = null;
+  const fallbackDefaultText = assets.fallbackText || core.FALLBACK_DICTIONARY;
   let listener = null;
   let dictionary = null;
-
-  function loadDefaultDictionaryText() {
-    if (defaultTextPromise) {
-      return defaultTextPromise;
-    }
-
-    if (fallbackDefaultText.length > String(core.FALLBACK_DICTIONARY || "").length) {
-      defaultTextPromise = Promise.resolve(fallbackDefaultText);
-      return defaultTextPromise;
-    }
-
-    const textUrl = String(assets.textUrl || "");
-    const scriptUrl = String(assets.scriptUrl || "");
-    defaultTextPromise = (async () => {
-      if (textUrl && typeof fetch === "function") {
-        try {
-          const response = await fetch(textUrl, { cache: "force-cache", credentials: "omit" });
-          if (response.ok) {
-            const text = await response.text();
-            if (text.length > fallbackDefaultText.length) {
-              return text;
-            }
-          }
-        } catch {
-          // Local file pages may block fetch; try the same-origin script below.
-        }
-      }
-
-      if (scriptUrl && typeof document !== "undefined" && document.head) {
-        await new Promise((resolve) => {
-          const script = document.createElement("script");
-          script.src = scriptUrl;
-          script.async = true;
-          script.onload = resolve;
-          script.onerror = resolve;
-          document.head.appendChild(script);
-        });
-        const text = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
-        if (text.length > fallbackDefaultText.length) {
-          return text;
-        }
-      }
-      return fallbackDefaultText;
-    })();
-    return defaultTextPromise;
-  }
-
   return {
     __isInlineFallback: true,
     set onmessage(next) {
@@ -6600,7 +6508,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
         try {
           if (message.type === "buildDefault") {
             const extraText = message.extraText || "";
-            const baseText = await loadDefaultDictionaryText();
+            const baseText = fallbackDefaultText || core.FALLBACK_DICTIONARY;
             dictionary = core.createDictionary(extraText ? `${baseText}\n${extraText}` : baseText);
             listener({
               data: {

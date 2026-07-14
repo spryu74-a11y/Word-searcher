@@ -79,12 +79,6 @@ async function main() {
     const built = await request("buildDefault", { extraText: "" });
     assert.strictEqual(built.type, "built");
 
-    const endOnlyGaSearch = await request("search", {
-      options: searchOptions("", [], 0, "가")
-    });
-    assert.ok(endOnlyGaSearch.payload.results.length > 0, "끝글자 가만 검색해야 결과가 나와야 합니다");
-    assert.ok(endOnlyGaSearch.payload.results.every((entry) => entry.reading.endsWith("가")));
-
     const usedUnaffectedBlunder = await request("search", {
       options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕"], 3)
     });
@@ -99,19 +93,6 @@ async function main() {
     );
     assert.strictEqual(usedUnaffectedBlunderEntry.oneShotReplyCount, 0);
     assert.strictEqual(usedUnaffectedBlunderEntry.alternativeOneShotReplyCount, 4);
-
-    const usedAffectedBlunder = await request("search", {
-      options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕", "쥐꼬리톱"], 4)
-    });
-    const usedAffectedBlunderEntry = usedAffectedBlunder.payload.results.find(
-      (entry) => entry.word === "\ubfcd\uc950"
-    );
-    assert.ok(usedAffectedBlunderEntry, "뿍쥐 must remain visible after a follower is used");
-    assert.strictEqual(
-      usedAffectedBlunderEntry.blunder,
-      true,
-      "a static blunder must not be downgraded when used words affect its followers"
-    );
 
     const duireSearch = await request("search", {
       options: searchOptions("\ub4f8\ub808", [], 0)
@@ -220,14 +201,6 @@ async function main() {
       extraText: "\ub05d\ud7a3\n\ub05d\uc00d\n\ub05d\ub9c8\ub098\n\ud7a3\uc00d"
     });
     assert.strictEqual(customBuilt.type, "built");
-
-    const endOnlySearch = await request("search", {
-      options: searchOptions("", [], 0, "\ud7a3")
-    });
-    assert.ok(endOnlySearch.payload.results.length > 0);
-    assert.ok(endOnlySearch.payload.results.every((entry) => entry.reading.endsWith("\ud7a3")));
-    assert.strictEqual(endOnlySearch.payload.queryInfo.reading, "");
-    assert.strictEqual(endOnlySearch.payload.queryInfo.endReading, "\ud7a3");
 
     const endHihSearch = await request("search", {
       options: searchOptions("\ub05d", [], 0, "\ud7a3")

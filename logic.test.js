@@ -272,16 +272,6 @@ assert.strictEqual(
   startEndResult.total
 );
 
-const endOnlyResult = logic.searchDictionary(startEndDictionary, {
-  query: "",
-  endQuery: "몽",
-  sourceMode: "starts",
-  oneShotOnly: false,
-  pageSize: 20
-});
-assert.strictEqual(endOnlyResult.total, 4);
-assert.ok(endOnlyResult.results.every((entry) => entry.reading.endsWith("몽")));
-
 const secondStartEndPage = logic.searchDictionary(startEndDictionary, {
   query: "슨",
   endQuery: "몽",
