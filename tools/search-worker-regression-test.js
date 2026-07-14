@@ -79,6 +79,12 @@ async function main() {
     const built = await request("buildDefault", { extraText: "" });
     assert.strictEqual(built.type, "built");
 
+    const endOnlyGaSearch = await request("search", {
+      options: searchOptions("", [], 0, "가")
+    });
+    assert.ok(endOnlyGaSearch.payload.results.length > 0, "끝글자 가만 검색해야 결과가 나와야 합니다");
+    assert.ok(endOnlyGaSearch.payload.results.every((entry) => entry.reading.endsWith("가")));
+
     const usedUnaffectedBlunder = await request("search", {
       options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕"], 3)
     });
