@@ -1482,6 +1482,10 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
         oneShotIndices.push(index);
         continue;
       }
+      if (staticCat === CATEGORY_BLUNDER) {
+        blunderIndices.push(index);
+        continue;
+      }
       const replyOptions = createPlayedOptions(options, index);
       if (
         checkHasOneShotCounter(index, replyOptions) ||
@@ -1911,7 +1915,7 @@ function getEntryState(index, options) {
     if (stateMayChange) {
       followerCount = getAvailableFollowerCount(index, options);
       oneShot = !forcedAlternative && followerCount === 0;
-      if (options.reclassifyUsedWords) {
+      if (options.reclassifyUsedWords && category !== CATEGORY_BLUNDER) {
         const oneShotCounters = oneShot ? [] : getOneShotCounterIndices(index, options);
         const alternativeOneShotCounters =
           oneShot || forcedAlternative ? [] : getAlternativeOneShotCounterIndices(index, options);

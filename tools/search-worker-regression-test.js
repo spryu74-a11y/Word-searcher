@@ -94,6 +94,19 @@ async function main() {
     assert.strictEqual(usedUnaffectedBlunderEntry.oneShotReplyCount, 0);
     assert.strictEqual(usedUnaffectedBlunderEntry.alternativeOneShotReplyCount, 4);
 
+    const usedAffectedBlunder = await request("search", {
+      options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕", "쥐꼬리톱"], 4)
+    });
+    const usedAffectedBlunderEntry = usedAffectedBlunder.payload.results.find(
+      (entry) => entry.word === "\ubfcd\uc950"
+    );
+    assert.ok(usedAffectedBlunderEntry, "뿍쥐 must remain visible after a follower is used");
+    assert.strictEqual(
+      usedAffectedBlunderEntry.blunder,
+      true,
+      "a static blunder must not be downgraded when used words affect its followers"
+    );
+
     const duireSearch = await request("search", {
       options: searchOptions("\ub4f8\ub808", [], 0)
     });
