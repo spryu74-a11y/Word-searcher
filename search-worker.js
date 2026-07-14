@@ -1907,47 +1907,31 @@ function getEntryState(index, options) {
       alternativeOneShot = false;
     }
   } else if (options.hasUsedWords) {
-    followerCount = getAvailableFollowerCount(index, options);
-    oneShot = !forcedAlternative && followerCount === 0;
-    if (!options.reclassifyUsedWords) {
-      alternativeOneShot = forcedAlternative || (!oneShot && category === CATEGORY_ALTERNATIVE);
-      if (oneShot) {
-        alternativeOneShot = false;
+    const stateMayChange = usedStateMayChange(index, options);
+    if (stateMayChange) {
+      followerCount = getAvailableFollowerCount(index, options);
+      oneShot = !forcedAlternative && followerCount === 0;
+      if (options.reclassifyUsedWords) {
+        const oneShotCounters = oneShot ? [] : getOneShotCounterIndices(index, options);
+        const alternativeOneShotCounters =
+          oneShot || forcedAlternative ? [] : getAlternativeOneShotCounterIndices(index, options);
+        oneShotReplyCount = oneShot ? 0 : oneShotCounters.length;
+        alternativeOneShotReplyCount =
+          oneShot || forcedAlternative ? 0 : alternativeOneShotCounters.length;
+        blunder =
+          !oneShot &&
+          !forcedAlternative &&
+          (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
+        alternativeOneShot =
+          forcedAlternative ||
+          (!oneShot &&
+            !blunder &&
+            (category === CATEGORY_ALTERNATIVE || hasOnlyBlunderFollowers(index, options)));
+      } else {
+        alternativeOneShot = forcedAlternative || (!oneShot && category === CATEGORY_ALTERNATIVE);
+        blunder = !oneShot && !forcedAlternative && category === CATEGORY_BLUNDER;
       }
-      const state = {
-        index,
-        key: entryKey(index),
-        word: String(entry[ENTRY_WORD]),
-        language: entry[ENTRY_LANGUAGE] === "e" ? "en" : "ko",
-        reading: String(entry[ENTRY_READING]),
-        start: entryStart(index),
-        end: entryEnd(index),
-        allowedAfter: getAllowedAfter(index),
-        followerCount,
-        oneShotReplyCount: 0,
-        alternativeOneShotReplyCount: 0,
-        oneShot,
-        alternativeOneShot,
-        blunder: !oneShot && !forcedAlternative && category === CATEGORY_BLUNDER
-      };
-      options.stateCache.set(index, state);
-      return state;
     }
-    const oneShotCounters = oneShot ? [] : getOneShotCounterIndices(index, options);
-    const alternativeOneShotCounters =
-      oneShot || forcedAlternative ? [] : getAlternativeOneShotCounterIndices(index, options);
-    oneShotReplyCount = oneShot ? 0 : oneShotCounters.length;
-    alternativeOneShotReplyCount =
-      oneShot || forcedAlternative ? 0 : alternativeOneShotCounters.length;
-    blunder =
-      !oneShot &&
-      !forcedAlternative &&
-      (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
-    alternativeOneShot =
-      forcedAlternative ||
-      (!oneShot &&
-        !blunder &&
-        (category === CATEGORY_ALTERNATIVE || hasOnlyBlunderFollowers(index, options)));
   }
   if (forcedAlternative) {
     oneShot = false;

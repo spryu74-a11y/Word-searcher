@@ -79,6 +79,21 @@ async function main() {
     const built = await request("buildDefault", { extraText: "" });
     assert.strictEqual(built.type, "built");
 
+    const usedUnaffectedBlunder = await request("search", {
+      options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕"], 3)
+    });
+    const usedUnaffectedBlunderEntry = usedUnaffectedBlunder.payload.results.find(
+      (entry) => entry.word === "\ubfcd\uc950"
+    );
+    assert.ok(usedUnaffectedBlunderEntry, "뿍쥐 must remain visible when other words are used");
+    assert.strictEqual(
+      usedUnaffectedBlunderEntry.blunder,
+      true,
+      "an unaffected static blunder must not be downgraded to a connection"
+    );
+    assert.strictEqual(usedUnaffectedBlunderEntry.oneShotReplyCount, 0);
+    assert.strictEqual(usedUnaffectedBlunderEntry.alternativeOneShotReplyCount, 4);
+
     const duireSearch = await request("search", {
       options: searchOptions("\ub4f8\ub808", [], 0)
     });
