@@ -2638,7 +2638,8 @@ function initApp(core) {
       state.searchInFlight = false;
       state.searchAbortController = null;
       const currentQuery = String(elements.queryInput.value || "").trim();
-      if (!currentQuery) {
+      const currentEndQuery = String(elements.endQueryInput.value || "").trim();
+      if (!currentQuery && !currentEndQuery) {
         state.pendingSearch = false;
         state.lastRenderedSearchSignature = "";
         renderStartScreen();
@@ -3356,7 +3357,8 @@ function initApp(core) {
 
     const validation = getSearchInputValidation();
     const query = validation.query;
-    const nextSignature = query ? getSearchSignature(query) : "";
+    const endOnlyQuery = !query && Boolean(validation.endReading);
+    const nextSignature = query || endOnlyQuery ? getSearchSignature(query) : "";
     if (!validation.ok) {
       cancelActiveSearch(validation.reason === "empty" ? "empty-query" : "invalid-query");
       window.clearTimeout(state.searchTimer);
@@ -3376,7 +3378,7 @@ function initApp(core) {
     if (state.searchInFlight && nextSignature && nextSignature !== state.searchSignature) {
       cancelActiveSearch("superseded");
     }
-    if (query && query.length >= SEARCH_MIN_QUERY_LENGTH) {
+    if ((query && query.length >= SEARCH_MIN_QUERY_LENGTH) || endOnlyQuery) {
       if (state.appLoading && !state.workerReady) {
         renderLoadingScreen("단어팩을 불러오는 중입니다");
       } else {
@@ -6514,7 +6516,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260714-r7", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260714-r8", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
