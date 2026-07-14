@@ -1739,7 +1739,8 @@
       stateCache: new Map(),
       followerCountCache: new Map(),
       oneShotCounterCache: new Map(),
-      alternativeOneShotCounterCache: new Map()
+      alternativeOneShotCounterCache: new Map(),
+      alternativeFollowerCache: new Map()
     };
   }
 
@@ -1856,7 +1857,12 @@
       ...entry,
       followerCount,
       oneShot,
-      alternativeOneShot: forcedAlternative || (!oneShot && !blunder && Boolean(entry.alternativeOneShot)),
+      alternativeOneShot:
+        forcedAlternative ||
+        (!oneShot &&
+          !blunder &&
+          (Boolean(entry.alternativeOneShot) ||
+            hasOnlyBlunderFollowers(dictionary, entry, options))),
       alternativeOneShotReplyCount,
       oneShotReplyCount,
       blunder
@@ -1871,6 +1877,38 @@
 
   function canBecomeOneShotEntry(dictionary, entry, options) {
     return !isForcedAlternativeEntry(entry) && getAvailableFollowerCount(dictionary, entry, options) === 0;
+  }
+
+  function hasOnlyBlunderFollowers(dictionary, entry, options) {
+    if (!options || !options.usedKeySet || !options.usedKeySet.size) {
+      return false;
+    }
+    if (!options.alternativeFollowerCache) {
+      options.alternativeFollowerCache = new Map();
+    }
+    if (options.alternativeFollowerCache.has(entry.key)) {
+      return options.alternativeFollowerCache.get(entry.key);
+    }
+
+    let followerCount = 0;
+    let allBlunders = true;
+    const seen = new Set();
+    for (const start of entry.allowedAfter || []) {
+      const bucket = dictionary.byStart.get(start) || [];
+      for (const reply of bucket) {
+        if (reply.key === entry.key || seen.has(reply.key) || isUsedEntry(reply, options)) {
+          continue;
+        }
+        seen.add(reply.key);
+        followerCount += 1;
+        if (!reply.blunder) {
+          allBlunders = false;
+        }
+      }
+    }
+    const result = followerCount > 0 && allBlunders;
+    options.alternativeFollowerCache.set(entry.key, result);
+    return result;
   }
 
   function getCounterReplyWords(dictionary, entry, predicate, options) {
@@ -6445,7 +6483,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260714-r4", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260714-r5", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

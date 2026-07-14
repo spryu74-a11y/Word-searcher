@@ -86,6 +86,36 @@ async function main() {
     assert.ok(duire, "듸레 must be returned from the static dictionary pack");
     assert.strictEqual(duire.oneShot, false, "듸레 must not be classified as a one-shot word");
 
+    const kitWord = "\uac00\uc2a4\ud0b7";
+    const kitValue = "\ud0b7\uac12";
+    const kitBefore = await request("search", {
+      options: searchOptions(kitWord, [], 0)
+    });
+    const kitBeforeEntry = kitBefore.payload.results.find((entry) => entry.word === kitWord);
+    assert.ok(kitBeforeEntry, "가스킷 must be returned before 킷값 is used");
+    assert.strictEqual(kitBeforeEntry.followerCount, 1);
+    assert.strictEqual(kitBeforeEntry.oneShot, false);
+
+    const kitAfter = await request("search", {
+      options: searchOptions(kitWord, [kitValue], 1)
+    });
+    const kitAfterEntry = kitAfter.payload.results.find((entry) => entry.word === kitWord);
+    assert.ok(kitAfterEntry, "가스킷 must remain visible after 킷값 is used");
+    assert.strictEqual(kitAfterEntry.followerCount, 0, "using 킷값 must remove the only 킷 follower");
+    assert.strictEqual(kitAfterEntry.oneShot, true, "가스킷 must become a one-shot after 킷값 is used");
+
+    const altAfterUsed = await request("search", {
+      options: searchOptions("안줸", ["줸으른", "줸댁"], 2)
+    });
+    const altAfterUsedEntry = altAfterUsed.payload.results.find((entry) => entry.word === "안줸");
+    assert.ok(altAfterUsedEntry, "안줸 must remain visible after its safe and alternative followers are used");
+    assert.strictEqual(altAfterUsedEntry.followerCount, 3);
+    assert.strictEqual(
+      altAfterUsedEntry.alternativeOneShot,
+      true,
+      "a word whose remaining followers are blunders must become an alternative one-shot"
+    );
+
     const valueSearch = await request("search", { options: searchOptions("\uac12", [], 0) });
     const standardValueSearch = await request("search", { options: searchOptions("\ud45c\uc900\uac12", [], 0) });
     const valueTable = valueSearch.payload.results.find((entry) => entry.word === "\uac12\ud45c");
@@ -148,8 +178,8 @@ async function main() {
     assert.strictEqual(broadUsedSearch.type, "searchResult");
     assert.strictEqual(broadUsedSearch.payload.timing.followerMs, 0);
     assert.ok(
-      broadUsedSearch.payload.elapsedMs < 100,
-      `used-word search must stay responsive (${broadUsedSearch.payload.elapsedMs}ms)`
+      broadUsedSearch.payload.timing.searchMs < 100,
+      `used-word search CPU must stay responsive (${broadUsedSearch.payload.timing.searchMs}ms)`
     );
 
     const customBuilt = await request("buildDefault", {

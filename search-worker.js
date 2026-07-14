@@ -15,6 +15,7 @@ const MAX_USED_KEYS = 50000;
 const MAX_WORD_LENGTH = 128;
 const MAX_PAGE_SIZE = 200;
 const MAX_PAGE = 1000000;
+const MAX_USED_RECLASSIFICATION_CANDIDATES = 5000;
 const MAX_TRACE_ID_LENGTH = 128;
 const MAX_INDEX_ENTRIES = 2000000;
 const MAX_MANIFEST_SHARDS = 12000;
@@ -1018,6 +1019,23 @@ async function searchDictionary(options, context) {
     return true;
   });
 
+  // Used words change follower and counter states before result groups are
+  // built. Load the affected reply buckets first; otherwise the first search
+  // after checking "사용됨" sees empty buckets and keeps stale connection
+  // labels until a later unrelated search happens to load them.
+  if (searchOptions.hasUsedWords) {
+    searchOptions.reclassifyUsedWords =
+      filteredCandidates.length <= MAX_USED_RECLASSIFICATION_CANDIDATES;
+    if (searchOptions.reclassifyUsedWords) {
+      for (const index of filteredCandidates) {
+        usedStateMayChange(index, searchOptions);
+      }
+      const affectedIndices = Array.from(searchOptions.usedAffectedIndices);
+      await loadShards(getAllowedAfterStartsForIndices(affectedIndices), signal);
+      throwIfAborted(signal);
+    }
+  }
+
   const collected = options.legacyFullSort
     ? collectResultsLegacy(
         filteredCandidates,
@@ -1238,7 +1256,9 @@ function createSearchOptions(options) {
     stateCache: new Map(),
     followerCache: new Map(),
     oneShotCounterCache: new Map(),
-    alternativeOneShotCounterCache: new Map()
+    alternativeOneShotCounterCache: new Map(),
+    alternativeFollowerCache: new Map(),
+    reclassifyUsedWords: true
   };
 }
 
@@ -1432,8 +1452,21 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
       alternativeIndices.push(index);
       continue;
     }
+    const staticCat = getEntryCategory(index);
+    if (options.hasUsedWords && !options.forceDynamic && !options.reclassifyUsedWords) {
+      const followerCount = getAvailableFollowerCount(index, options);
+      if (followerCount === 0) {
+        oneShotIndices.push(index);
+      } else if (staticCat === CATEGORY_ALTERNATIVE) {
+        alternativeIndices.push(index);
+      } else if (staticCat === CATEGORY_BLUNDER) {
+        blunderIndices.push(index);
+      } else {
+        safeConnectionIndices.push(index);
+      }
+      continue;
+    }
     if (options.hasUsedWords && !options.forceDynamic) {
-      const staticCat = getEntryCategory(index);
       if (staticCat === CATEGORY_ONE_SHOT) {
         oneShotIndices.push(index);
         continue;
@@ -1449,9 +1482,20 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
         oneShotIndices.push(index);
         continue;
       }
-      if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
-      else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
-      else safeConnectionIndices.push(index);
+      const replyOptions = createPlayedOptions(options, index);
+      if (
+        checkHasOneShotCounter(index, replyOptions) ||
+        checkHasAltOneShotCounter(index, replyOptions)
+      ) {
+        blunderIndices.push(index);
+      } else if (
+        staticCat === CATEGORY_ALTERNATIVE ||
+        hasOnlyBlunderFollowers(index, options)
+      ) {
+        alternativeIndices.push(index);
+      } else {
+        safeConnectionIndices.push(index);
+      }
     } else {
       const followerCount = getAvailableFollowerCount(index, options);
       if (followerCount === 0) {
@@ -1489,6 +1533,9 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
 function usedStateMayChange(index, options) {
   if (!options || !options.hasUsedWords) {
     return false;
+  }
+  if (options.usedAffectedIndices && options.usedAffectedIndices.has(index)) {
+    return true;
   }
   if (isUsedIndex(index, options)) {
     if (options.usedAffectedIndices) options.usedAffectedIndices.add(index);
@@ -1862,6 +1909,30 @@ function getEntryState(index, options) {
   } else if (options.hasUsedWords) {
     followerCount = getAvailableFollowerCount(index, options);
     oneShot = !forcedAlternative && followerCount === 0;
+    if (!options.reclassifyUsedWords) {
+      alternativeOneShot = forcedAlternative || (!oneShot && category === CATEGORY_ALTERNATIVE);
+      if (oneShot) {
+        alternativeOneShot = false;
+      }
+      const state = {
+        index,
+        key: entryKey(index),
+        word: String(entry[ENTRY_WORD]),
+        language: entry[ENTRY_LANGUAGE] === "e" ? "en" : "ko",
+        reading: String(entry[ENTRY_READING]),
+        start: entryStart(index),
+        end: entryEnd(index),
+        allowedAfter: getAllowedAfter(index),
+        followerCount,
+        oneShotReplyCount: 0,
+        alternativeOneShotReplyCount: 0,
+        oneShot,
+        alternativeOneShot,
+        blunder: !oneShot && !forcedAlternative && category === CATEGORY_BLUNDER
+      };
+      options.stateCache.set(index, state);
+      return state;
+    }
     const oneShotCounters = oneShot ? [] : getOneShotCounterIndices(index, options);
     const alternativeOneShotCounters =
       oneShot || forcedAlternative ? [] : getAlternativeOneShotCounterIndices(index, options);
@@ -1873,7 +1944,10 @@ function getEntryState(index, options) {
       !forcedAlternative &&
       (oneShotReplyCount > 0 || alternativeOneShotReplyCount > 0);
     alternativeOneShot =
-      forcedAlternative || (!oneShot && !blunder && category === CATEGORY_ALTERNATIVE);
+      forcedAlternative ||
+      (!oneShot &&
+        !blunder &&
+        (category === CATEGORY_ALTERNATIVE || hasOnlyBlunderFollowers(index, options)));
   }
   if (forcedAlternative) {
     oneShot = false;
@@ -2630,8 +2704,40 @@ function createPlayedOptions(options, playedIndex) {
     stateCache: new Map(),
     followerCache: new Map(),
     oneShotCounterCache: new Map(),
-    alternativeOneShotCounterCache: new Map()
+    alternativeOneShotCounterCache: new Map(),
+    alternativeFollowerCache: new Map(),
+    reclassifyUsedWords: options.reclassifyUsedWords
   };
+}
+
+function hasOnlyBlunderFollowers(index, options) {
+  if (!options || !options.hasUsedWords) {
+    return false;
+  }
+  if (options.alternativeFollowerCache && options.alternativeFollowerCache.has(index)) {
+    return options.alternativeFollowerCache.get(index);
+  }
+
+  let followerCount = 0;
+  let allBlunders = true;
+  const seen = new Set();
+  for (const start of getAllowedAfter(index)) {
+    forEachBucketIndex(start, (replyIndex) => {
+      if (replyIndex === index || seen.has(replyIndex) || isUsedIndex(replyIndex, options)) {
+        return;
+      }
+      seen.add(replyIndex);
+      followerCount += 1;
+      if (getEntryCategory(replyIndex) !== CATEGORY_BLUNDER) {
+        allBlunders = false;
+      }
+    });
+  }
+  const result = followerCount > 0 && allBlunders;
+  if (options.alternativeFollowerCache) {
+    options.alternativeFollowerCache.set(index, result);
+  }
+  return result;
 }
 
 function getPackedEntry(index) {

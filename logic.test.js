@@ -835,6 +835,24 @@ assert.deepStrictEqual(logic.getQueryInfo("계란", "reply").starts, ["란", "�
 const nfdDictionary = logic.createDictionary(["\u1100\u1161\u1102\u1161", "나무"].join("\n"));
 assert.ok(nfdDictionary.entries.some((entry) => entry.word === "가나"));
 
+const dynamicAlternativeDictionary = logic.createDictionary(
+  ["가쀀", "쀀쀁", "쀁쀄", "쀀쀂", "쀂쀃", "쀃쀂"].join("\n")
+);
+const dynamicAlternativeBefore = logic.searchDictionary(dynamicAlternativeDictionary, {
+  query: "가쀀",
+  sourceMode: "starts",
+  pageSize: 10
+}).results.find((entry) => entry.word === "가쀀");
+const dynamicAlternativeAfter = logic.searchDictionary(dynamicAlternativeDictionary, {
+  query: "가쀀",
+  sourceMode: "starts",
+  pageSize: 10,
+  usedKeys: ["쀀쀂"]
+}).results.find((entry) => entry.word === "가쀀");
+assert.ok(dynamicAlternativeBefore && dynamicAlternativeBefore.blunder);
+assert.ok(dynamicAlternativeAfter && dynamicAlternativeAfter.alternativeOneShot);
+assert.strictEqual(dynamicAlternativeAfter.followerCount, 1);
+
 const noResultSearch = logic.searchDictionary(valueTableDictionary, {
   query: "흙",
   sourceMode: "starts",
