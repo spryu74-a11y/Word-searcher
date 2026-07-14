@@ -6302,7 +6302,7 @@ function initApp(core) {
       const isUsed = setUsedWord(entry, input.checked);
       input.checked = isUsed;
       row.classList.toggle("used-word", isUsed);
-      scheduleSearch(0);
+      scheduleSearch(80);
     });
 
     const text = document.createElement("span");
@@ -6483,7 +6483,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260714-r5", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260714-r6", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
