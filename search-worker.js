@@ -1561,7 +1561,7 @@ function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord
   }
   sortIndexGroup(oneShotIndices, exactWord, exactReading);
   sortIndexGroup(alternativeIndices, exactWord, exactReading);
-  sortIndexGroup(blunderIndices, exactWord, exactReading);
+  blunderIndices.sort((left, right) => compareBlunderIndexGroup(left, right, exactWord, exactReading));
   sortConnectionIndexGroup(connectionIndices);
   const categoryCounts = {
     oneShot: oneShotIndices.length,
@@ -1643,14 +1643,14 @@ function collectCategorizedIndexGroups(
         { indices: oneShotIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
         { indices: alternativeIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
         { indices: connectionIndices, compare: compareConnection },
-        { indices: blunderIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) }
+        { indices: blunderIndices, compare: (left, right) => compareBlunderIndexGroup(left, right, exactWord, exactReading) }
       ]
     : [
         { indices: pinned, compare: compareIndexReading },
         { indices: connectionIndices, compare: compareConnection },
         { indices: alternativeIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
         { indices: oneShotIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) },
-        { indices: blunderIndices, compare: (left, right) => compareIndexSearchGroup(left, right, exactWord, exactReading) }
+        { indices: blunderIndices, compare: (left, right) => compareBlunderIndexGroup(left, right, exactWord, exactReading) }
       ];
 
   const visibleIndices = [];
@@ -1765,6 +1765,30 @@ function sortIndexGroup(indices, exactWord, exactReading) {
     }
     return compareIndexReading(left, right);
   });
+}
+
+function compareBlunderIndexGroup(left, right, exactWord, exactReading) {
+  const leftExact = isExactQueryMatchIndex(left, exactWord, exactReading);
+  const rightExact = isExactQueryMatchIndex(right, exactWord, exactReading);
+  if (leftExact !== rightExact) {
+    return leftExact ? -1 : 1;
+  }
+
+  const leftEntry = getPackedEntry(left);
+  const rightEntry = getPackedEntry(right);
+  const leftAlternative = Number(leftEntry[ENTRY_ALTERNATIVE_REPLY_COUNT]) || 0;
+  const rightAlternative = Number(rightEntry[ENTRY_ALTERNATIVE_REPLY_COUNT]) || 0;
+  if (leftAlternative !== rightAlternative) {
+    return leftAlternative - rightAlternative;
+  }
+
+  const leftOneShot = Number(leftEntry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
+  const rightOneShot = Number(rightEntry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
+  if (leftOneShot !== rightOneShot) {
+    return rightOneShot - leftOneShot;
+  }
+
+  return compareIndexReading(left, right);
 }
 
 function sortConnectionIndexGroup(indices) {

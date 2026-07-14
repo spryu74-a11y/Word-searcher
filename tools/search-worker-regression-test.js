@@ -120,6 +120,21 @@ async function main() {
       "large reply buckets must include alternative counter words"
     );
 
+    const orderedBlunderSearch = await request("search", {
+      options: searchOptions("\uac07", [], 0)
+    });
+    const orderedBlunders = orderedBlunderSearch.payload.results.filter((entry) => entry.blunder);
+    for (let index = 1; index < orderedBlunders.length; index += 1) {
+      const previous = orderedBlunders[index - 1];
+      const current = orderedBlunders[index];
+      assert.ok(
+        previous.alternativeOneShotReplyCount < current.alternativeOneShotReplyCount ||
+          (previous.alternativeOneShotReplyCount === current.alternativeOneShotReplyCount &&
+            previous.oneShotReplyCount >= current.oneShotReplyCount),
+        "blunders must sort by fewer alternative counters, then more one-shot counters"
+      );
+    }
+
     const broadUsedSearch = await request("search", {
       options: searchOptions("\ud504", ["\uac12\ud45c"], 1)
     });

@@ -1584,7 +1584,7 @@
     sortSearchGroup(oneShots, exactWord, exactReading);
     sortSearchGroup(alternatives, exactWord, exactReading);
     sortConnectionGroup(safeConnections);
-    sortSearchGroup(blunders, exactWord, exactReading);
+    sortBlunderGroup(blunders, exactWord, exactReading);
 
     const categoryCounts = {
       oneShot: oneShots.length,
@@ -1620,6 +1620,30 @@
       if (leftExact !== rightExact) {
         return leftExact ? -1 : 1;
       }
+      return compareReading(left, right);
+    });
+  }
+
+  function sortBlunderGroup(entries, exactWord, exactReading) {
+    entries.sort((left, right) => {
+      const leftExact = isExactQueryMatch(left, exactWord, exactReading);
+      const rightExact = isExactQueryMatch(right, exactWord, exactReading);
+      if (leftExact !== rightExact) {
+        return leftExact ? -1 : 1;
+      }
+
+      const leftAlternative = Number(left.alternativeOneShotReplyCount) || 0;
+      const rightAlternative = Number(right.alternativeOneShotReplyCount) || 0;
+      if (leftAlternative !== rightAlternative) {
+        return leftAlternative - rightAlternative;
+      }
+
+      const leftOneShot = Number(left.oneShotReplyCount) || 0;
+      const rightOneShot = Number(right.oneShotReplyCount) || 0;
+      if (leftOneShot !== rightOneShot) {
+        return rightOneShot - leftOneShot;
+      }
+
       return compareReading(left, right);
     });
   }
@@ -6422,7 +6446,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260713-r3", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260714-r4", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
