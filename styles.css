@@ -217,7 +217,7 @@ button {
 
 .channel-sidebar {
   display: grid;
-  grid-template-rows: 48px 1fr;
+  grid-template-rows: 48px minmax(0, 1fr) 56px;
   min-width: 0;
   background: var(--sidebar);
 }
@@ -235,8 +235,9 @@ button {
   position: relative;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 14px;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+  padding: 0 16px;
+  background: #2b2d31;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.24);
 }
 
 .server-header strong {
@@ -279,6 +280,63 @@ button {
   padding: 12px 8px;
   scrollbar-color: var(--line) transparent;
   scrollbar-width: thin;
+}
+
+.sidebar-userbar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+  padding: 8px 10px;
+  background: #232428;
+  border-top: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.sidebar-user-avatar {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border-radius: 50%;
+  background: #5865f2;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.sidebar-user-copy {
+  display: grid;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.sidebar-user-copy strong,
+.sidebar-user-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-user-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.sidebar-user-copy small {
+  margin-top: 2px;
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.sidebar-user-status {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border: 2px solid #232428;
+  border-radius: 50%;
+  background: var(--green);
+  box-sizing: content-box;
 }
 
 .settings-sidebar-content {
@@ -373,7 +431,7 @@ body.settings-channel .settings-sidebar-content {
 .chat-view {
   display: grid;
   position: relative;
-  grid-template-rows: 48px auto auto auto minmax(0, 1fr);
+  grid-template-rows: 48px auto minmax(0, 1fr) auto auto;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -392,6 +450,55 @@ body.settings-channel .settings-sidebar-content {
   align-items: center;
   min-width: 0;
   gap: 10px;
+}
+
+.header-icon-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.header-icon-button:hover {
+  background: #3f4147;
+  color: var(--text);
+}
+
+.header-icon-button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.header-search-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 142px;
+  height: 28px;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border-radius: 5px;
+  background: #1e1f22;
+  color: var(--quiet);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.header-search-pill svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
 }
 
 .header-status {
@@ -453,16 +560,18 @@ h2 {
 .info-bar {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  border-bottom: 1px solid var(--line);
-  background: var(--line);
+  gap: 16px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(26, 27, 30, 0.82);
+  background: var(--chat);
 }
 
 .info-bar > div {
   display: grid;
   gap: 3px;
   min-width: 0;
-  padding: 10px 18px;
+  min-width: 0;
+  padding: 9px 0;
   background: var(--chat);
 }
 
@@ -482,6 +591,7 @@ h2 {
 }
 
 .message-list {
+  grid-row: 3;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -502,6 +612,7 @@ h2 {
 }
 
 .result-pager {
+  grid-row: 4;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -922,11 +1033,12 @@ body.app-loading .composer-input input {
 }
 
 .composer {
+  grid-row: 5;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--line);
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
   background: var(--chat);
   position: relative;
   z-index: 1;
@@ -1534,6 +1646,11 @@ body.settings-channel .member-panel {
     padding-left: max(12px, env(safe-area-inset-left));
   }
 
+  .header-icon-button,
+  .header-search-pill {
+    display: none;
+  }
+
   .member-panel {
     grid-column: 1;
     width: min(420px, 100vw);
@@ -1551,7 +1668,7 @@ body.settings-channel .member-panel {
 
 @media (max-width: 640px) {
   .chat-view {
-    grid-template-rows: 52px auto auto minmax(0, 1fr) auto;
+    grid-template-rows: 52px auto minmax(0, 1fr) auto auto;
   }
 
   .chat-header {
@@ -1586,11 +1703,11 @@ body.settings-channel .member-panel {
   }
 
   .result-pager {
-    grid-row: 3;
+    grid-row: 4;
   }
 
   .message-list {
-    grid-row: 4;
+    grid-row: 3;
   }
 
   .composer {
