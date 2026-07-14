@@ -31,7 +31,6 @@
   --quiet: #949ba4;
   --accent: #5865f2;
   --accent-hover: #4752c4;
-  --theme-gradient: linear-gradient(135deg, #5865f2, #7289da);
   --green: #23a559;
   --yellow: #f0b232;
   --red: #f23f42;
@@ -258,21 +257,6 @@ button {
   white-space: nowrap;
 }
 
-.server-header span {
-  padding-right: 14px;
-}
-
-.server-header::after {
-  content: "⌄";
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  color: var(--muted);
-  font-size: 16px;
-  line-height: 1;
-  transform: translateY(-55%);
-}
-
 .channel-list {
   min-width: 0;
   overflow: auto;
@@ -377,7 +361,7 @@ body.settings-channel .settings-sidebar-content {
   min-width: 0;
   min-height: 0;
   height: 100%;
-  background: var(--theme-gradient);
+  background: var(--chat);
 }
 
 .chat-header {
@@ -1221,37 +1205,6 @@ body.settings-channel .member-panel {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
-}
-
-.theme-settings {
-  overflow: visible;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-}
-
-.theme-preview {
-  height: 48px;
-  margin: 0 0 8px;
-  border-radius: 8px;
-  background: var(--theme-gradient);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-}
-
-.settings-color-row input[type="color"] {
-  width: 42px;
-  height: 30px;
-  padding: 2px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  background: var(--panel);
-  cursor: pointer;
-}
-
-.theme-reset-button {
-  width: 100%;
-  margin-top: 8px;
 }
 
 .settings-action-button {

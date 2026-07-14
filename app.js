@@ -2263,17 +2263,6 @@ function initApp(core) {
   const USED_WORDS_STORAGE_KEY = "kkung-used-words-v1";
   const USED_WORD_CONTROLS_STORAGE_KEY = "kkung-used-word-controls-v1";
   const LANGUAGE_STORAGE_KEY = "kkung-language-v1";
-  const THEME_STORAGE_KEY = "kkung-theme-v1";
-  const DEFAULT_THEME = Object.freeze({
-    background: "#313338",
-    gradient: "discord"
-  });
-  const THEME_PRESETS = Object.freeze({
-    discord: { background: "#313338", end: "#1f2023" },
-    midnight: { background: "#171927", end: "#0e1018" },
-    slate: { background: "#343b4b", end: "#232a37" },
-    light: { background: "#545962", end: "#3c4047" }
-  });
   // API sources are build-time inputs. Search must never wait for a network
   // lookup after the bundled dictionary has been built.
   const STATIC_WORD_PACK_MODE = true;
@@ -2402,10 +2391,6 @@ function initApp(core) {
     settingsLanguage: document.getElementById("settingsLanguage"),
     settingsOneShotOnly: document.getElementById("settingsOneShotOnly"),
     settingsSearch: document.getElementById("settingsSearch"),
-    themeBackgroundColor: document.getElementById("themeBackgroundColor"),
-    themeBackgroundGradient: document.getElementById("themeBackgroundGradient"),
-    themePreview: document.getElementById("themePreview"),
-    resetTheme: document.getElementById("resetTheme"),
     statEn: document.getElementById("statEn"),
     statKo: document.getElementById("statKo"),
     statAlt: document.getElementById("statAlt"),
@@ -2490,7 +2475,6 @@ function initApp(core) {
     showUsedControls: true,
     sourceMode: "starts",
     language: initialLanguage,
-    theme: loadThemeSettings(),
     usedWordIds: loadUsedWordIds(),
     usedVersion: 0,
     virtualResults: null,
@@ -2516,7 +2500,6 @@ function initApp(core) {
   elements.defaultSourceMeta.textContent = "오프라인 단어팩 로딩";
   updateOnlineState();
   updateOpendictState();
-  applyTheme(state.theme);
 
   attachWorkerHandlers(state.worker);
   attachGlobalErrorHandlers();
@@ -3001,20 +2984,6 @@ function initApp(core) {
       clearSearchResultCache();
       state.lastRenderedSearchSignature = "";
       scheduleSearch(0, true);
-    });
-  }
-  if (elements.themeBackgroundColor) {
-    addSearchEventListener(elements.themeBackgroundColor, "input", handleThemeColorInput);
-  }
-  if (elements.themeBackgroundGradient) {
-    addSearchEventListener(elements.themeBackgroundGradient, "change", handleThemeGradientChange);
-  }
-  if (elements.resetTheme) {
-    addSearchEventListener(elements.resetTheme, "click", () => {
-      state.theme = { ...DEFAULT_THEME };
-      saveThemeSettings();
-      applyTheme(state.theme);
-      syncThemeControls();
     });
   }
   if (elements.settingsSearch) {
@@ -3841,108 +3810,6 @@ function initApp(core) {
     scheduleSearch(0);
   }
 
-  function normalizeThemeColor(value, fallback) {
-    const color = String(value || "").trim();
-    return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
-  }
-
-  function normalizeThemeGradient(value) {
-    const gradient = String(value || "").trim().toLowerCase();
-    return gradient === "custom" || gradient === "solid" || THEME_PRESETS[gradient]
-      ? gradient
-      : DEFAULT_THEME.gradient;
-  }
-
-  function loadThemeSettings() {
-    try {
-      const raw = readLocalStorage(THEME_STORAGE_KEY, "");
-      const parsed = raw ? JSON.parse(raw) : {};
-      const gradient = normalizeThemeGradient(parsed && parsed.gradient);
-      const preset = THEME_PRESETS[gradient];
-      return {
-        background: normalizeThemeColor(parsed && parsed.background, preset ? preset.background : DEFAULT_THEME.background),
-        gradient
-      };
-    } catch {
-      return { ...DEFAULT_THEME };
-    }
-  }
-
-  function saveThemeSettings() {
-    writeLocalStorage(THEME_STORAGE_KEY, JSON.stringify(state.theme));
-  }
-
-  function getThemeColors(theme) {
-    const current = theme || DEFAULT_THEME;
-    const preset = THEME_PRESETS[current.gradient];
-    if (preset) {
-      return preset;
-    }
-    const background = normalizeThemeColor(current.background, DEFAULT_THEME.background);
-    return {
-      background,
-      end: current.gradient === "solid"
-        ? background
-        : `color-mix(in srgb, ${background} 68%, #000000)`
-    };
-  }
-
-  function applyTheme(theme) {
-    const colors = getThemeColors(theme);
-    const root = document.documentElement;
-    root.style.setProperty("--chat", colors.background);
-    root.style.setProperty("--chat-soft", colors.end);
-    root.style.setProperty(
-      "--theme-gradient",
-      theme && theme.gradient === "solid"
-        ? colors.background
-        : `linear-gradient(135deg, ${colors.background}, ${colors.end})`
-    );
-    if (elements.themePreview) {
-      elements.themePreview.style.background =
-        theme && theme.gradient === "solid"
-          ? colors.background
-          : `linear-gradient(135deg, ${colors.background}, ${colors.end})`;
-    }
-  }
-
-  function syncThemeControls() {
-    if (!elements.themeBackgroundColor || !elements.themeBackgroundGradient) {
-      return;
-    }
-    const colors = getThemeColors(state.theme);
-    elements.themeBackgroundColor.value = colors.background;
-    elements.themeBackgroundGradient.value = normalizeThemeGradient(state.theme.gradient);
-  }
-
-  function handleThemeColorInput(event) {
-    const background = normalizeThemeColor(
-      elements.themeBackgroundColor && elements.themeBackgroundColor.value,
-      DEFAULT_THEME.background
-    );
-    state.theme = { background, gradient: "custom" };
-    saveThemeSettings();
-    applyTheme(state.theme);
-    if (elements.themeBackgroundGradient) {
-      elements.themeBackgroundGradient.value = "custom";
-    }
-  }
-
-  function handleThemeGradientChange() {
-    const gradient = normalizeThemeGradient(elements.themeBackgroundGradient && elements.themeBackgroundGradient.value);
-    const preset = THEME_PRESETS[gradient];
-    state.theme = {
-      background: preset ? preset.background : normalizeThemeColor(
-        elements.themeBackgroundColor && elements.themeBackgroundColor.value,
-        DEFAULT_THEME.background
-      ),
-      gradient
-    };
-    saveThemeSettings();
-    applyTheme(state.theme);
-    syncThemeControls();
-  }
-
   function syncSettingsControls() {
     if (elements.settingsLanguage) {
       elements.settingsLanguage.value = state.language;
@@ -3950,7 +3817,6 @@ function initApp(core) {
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.checked = elements.oneShotOnly.checked;
     }
-    syncThemeControls();
     applyUsedControlsVisibility();
     filterSettings();
   }
