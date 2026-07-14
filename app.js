@@ -2857,6 +2857,7 @@ function initApp(core) {
     state.worker = createInlineWorkerFallback(core, {
       textUrl: defaultDictionaryTextUrl,
       metaUrl: defaultDictionaryMetaUrl,
+      scriptUrl: defaultDictionaryScriptUrl,
       fallbackText: fallbackDefaultText
     });
     attachWorkerHandlers(state.worker);
@@ -6528,7 +6529,11 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
     dictionaryAssets && typeof dictionaryAssets === "object"
       ? dictionaryAssets
       : { fallbackText: dictionaryAssets };
-  const fallbackDefaultText = assets.fallbackText || core.FALLBACK_DICTIONARY;
+  const embeddedDictionaryText = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
+  const fallbackDefaultText =
+    embeddedDictionaryText.length > String(core.FALLBACK_DICTIONARY || "").length
+      ? embeddedDictionaryText
+      : assets.fallbackText || core.FALLBACK_DICTIONARY;
   let defaultTextPromise = null;
   let listener = null;
   let dictionary = null;
@@ -6538,29 +6543,44 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
       return defaultTextPromise;
     }
 
-    const embeddedText = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
-    if (embeddedText.length > fallbackDefaultText.length) {
-      defaultTextPromise = Promise.resolve(embeddedText);
-      return defaultTextPromise;
-    }
-
-    const scriptUrl = String(assets.scriptUrl || "");
-    if (!scriptUrl || typeof document === "undefined" || !document.head) {
+    if (fallbackDefaultText.length > String(core.FALLBACK_DICTIONARY || "").length) {
       defaultTextPromise = Promise.resolve(fallbackDefaultText);
       return defaultTextPromise;
     }
 
-    defaultTextPromise = new Promise((resolve) => {
-      const script = document.createElement("script");
-      script.src = scriptUrl;
-      script.async = true;
-      script.onload = () => {
+    const textUrl = String(assets.textUrl || "");
+    const scriptUrl = String(assets.scriptUrl || "");
+    defaultTextPromise = (async () => {
+      if (textUrl && typeof fetch === "function") {
+        try {
+          const response = await fetch(textUrl, { cache: "force-cache", credentials: "omit" });
+          if (response.ok) {
+            const text = await response.text();
+            if (text.length > fallbackDefaultText.length) {
+              return text;
+            }
+          }
+        } catch {
+          // Local file pages may block fetch; try the same-origin script below.
+        }
+      }
+
+      if (scriptUrl && typeof document !== "undefined" && document.head) {
+        await new Promise((resolve) => {
+          const script = document.createElement("script");
+          script.src = scriptUrl;
+          script.async = true;
+          script.onload = resolve;
+          script.onerror = resolve;
+          document.head.appendChild(script);
+        });
         const text = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
-        resolve(text.length > fallbackDefaultText.length ? text : fallbackDefaultText);
-      };
-      script.onerror = () => resolve(fallbackDefaultText);
-      document.head.appendChild(script);
-    });
+        if (text.length > fallbackDefaultText.length) {
+          return text;
+        }
+      }
+      return fallbackDefaultText;
+    })();
     return defaultTextPromise;
   }
 
