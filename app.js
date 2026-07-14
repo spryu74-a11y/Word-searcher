@@ -6529,8 +6529,41 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
       ? dictionaryAssets
       : { fallbackText: dictionaryAssets };
   const fallbackDefaultText = assets.fallbackText || core.FALLBACK_DICTIONARY;
+  let defaultTextPromise = null;
   let listener = null;
   let dictionary = null;
+
+  function loadDefaultDictionaryText() {
+    if (defaultTextPromise) {
+      return defaultTextPromise;
+    }
+
+    const embeddedText = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
+    if (embeddedText.length > fallbackDefaultText.length) {
+      defaultTextPromise = Promise.resolve(embeddedText);
+      return defaultTextPromise;
+    }
+
+    const scriptUrl = String(assets.scriptUrl || "");
+    if (!scriptUrl || typeof document === "undefined" || !document.head) {
+      defaultTextPromise = Promise.resolve(fallbackDefaultText);
+      return defaultTextPromise;
+    }
+
+    defaultTextPromise = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = scriptUrl;
+      script.async = true;
+      script.onload = () => {
+        const text = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
+        resolve(text.length > fallbackDefaultText.length ? text : fallbackDefaultText);
+      };
+      script.onerror = () => resolve(fallbackDefaultText);
+      document.head.appendChild(script);
+    });
+    return defaultTextPromise;
+  }
+
   return {
     __isInlineFallback: true,
     set onmessage(next) {
@@ -6541,7 +6574,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
         try {
           if (message.type === "buildDefault") {
             const extraText = message.extraText || "";
-            const baseText = fallbackDefaultText || core.FALLBACK_DICTIONARY;
+            const baseText = await loadDefaultDictionaryText();
             dictionary = core.createDictionary(extraText ? `${baseText}\n${extraText}` : baseText);
             listener({
               data: {
