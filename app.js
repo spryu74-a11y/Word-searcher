@@ -6515,12 +6515,18 @@ function createSearchWorker(core, dictionaryAssets) {
   if (typeof Worker === "undefined") {
     return createInlineWorkerFallback(core, dictionaryAssets);
   }
+  const workerUrl = new URL(
+    "./search-worker.js?v=instant-search-20260714-r9",
+    window.location.href
+  ).toString();
   try {
-    return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260714-r8", window.location.href)
-    );
+    return new Worker(workerUrl);
   } catch {
-    return createInlineWorkerFallback(core, dictionaryAssets);
+    try {
+      return new Worker(new URL(workerUrl));
+    } catch {
+      return createInlineWorkerFallback(core, dictionaryAssets);
+    }
   }
 }
 
