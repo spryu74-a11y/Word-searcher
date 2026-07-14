@@ -16,7 +16,7 @@ Included sources:
 - Naver dictionary word pack: `data/korean_words_with_naver_dict.txt`.
 - Woori Mal Sam full JSON word pack: `data/woorimalsam_words.txt`, generated from the local full JSON download with `tools/extract_woorimalsam_words.py`. The extractor keeps `word_unit = 어휘`, removes phrase entries, suffix/prefix particles, endings, and non-Hangul headwords, and keeps dialect, archaic, and North Korean senses.
 - Standard Korean Dictionary full JSON word pack: `data/pyojun_words.txt`, generated from `Normalstudent1/pyojunDict` or another local Standard Korean Dictionary full JSON download with `tools/extract_pyojun_words.py`. The extractor keeps `word_unit = 단어`, removes phrases, endings, particles, affixes, one-syllable headwords, homograph numbers, hyphen/caret separators, and non-Hangul headwords.
-- Optional Standard Korean Dictionary Open API word pack: `data/stdict_api_words.txt`, generated with `tools/fetch_stdict_api_words.py`. The fetcher uses `https://stdict.korean.go.kr/api/search.do`, `req_type=json`, `advanced=y`, `target=1`, `method=start`, and `type1=word`, then recursively splits prefixes when API pagination limits would otherwise hide results. It stores progress in `data/stdict_api_fetch_state.json`.
+- Standard Korean Dictionary Open API word pack: `data/stdict_api_words.txt`, generated once with `tools/sync_api_dictionary.py`. The fetcher uses `https://stdict.korean.go.kr/api/search.do`, `req_type=json`, `advanced=y`, `target=1`, `method=start`, and `type1=word`, then recursively splits prefixes when API pagination limits would otherwise hide results. It stores resumable progress in `data/stdict_api_fetch_state.json`.
 - Cleaned dictionary word pack: `data/korean_words_dictionary_cleaned.txt`.
 - Wordrow one-shot word pack extracted from `data/wordrow_all_starts_ends.md`: `data/wordrow_oneshot_terms.txt`.
 - Wordrow merged dictionary word pack: `data/korean_words_dictionary_wordrow_merged.txt`, included only for entries already present in trusted local sources, the Woori Mal Sam pack, or the extracted Wordrow one-shot pack.
@@ -35,7 +35,7 @@ Attribution:
 Runtime dictionary:
 
 - The browser app is fully offline. It loads only `data/default-dictionary.js` plus optional user-added text/file entries.
-- Woori Mal Sam is the primary source for the bundled offline word pack. Its Open API and full-download JSON are build-time inputs only; the browser app does not call Woori Mal Sam, Wordrow, Wiktionary, or any other network source while searching.
+- Woori Mal Sam and the Standard Korean Dictionary API are build-time inputs only; the browser app does not call OpenDict, Woori Mal Sam, Wordrow, Wiktionary, or any other network source while searching. Search runs against the generated local index after the one-time pack load.
 - Any missed word should be added through `data/extra_terms.txt` or a custom word file, then `tools/build_dictionary_pack.py` should be run to regenerate the bundled dictionary.
 
 Rebuild:
@@ -50,9 +50,10 @@ Fetch Standard Korean Dictionary words with an API key:
 
 ```powershell
 $env:STDICT_API_KEY = "your-32-hex-key"
-python .\tools\fetch_stdict_api_words.py
-python .\tools\build_dictionary_pack.py
+python .\tools\sync_api_dictionary.py
 ```
+
+The fetch is resumable. After it reaches `completed`, running the command again does not call the API again unless `--restart` is supplied. The API key is read from the environment and is never written into the repository or browser assets.
 
 Extra files can be merged:
 

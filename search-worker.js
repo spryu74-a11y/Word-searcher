@@ -53,6 +53,7 @@ const MAX_COUNTER_REPLY_WORDS = 12;
 const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨"]);
 const SHARD_CACHE_MAX = 160;
 const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
+const BACKGROUND_WARMUP_SHARD_COUNT = 4;
 const SEARCH_RESULT_CACHE_MAX = 150;
 const SINGLE_CHAR_RESULT_CACHE_MAX = 150;
 const TWO_CHAR_RESULT_CACHE_MAX = 200;
@@ -89,6 +90,7 @@ let searchResultCache = new Map();
 let singleCharResultCache = new Map();
 let twoCharResultCache = new Map();
 let runtimeVersion = 0;
+let forceDynamicClassification = false;
 let activeSearchController = null;
 let latestSearchId = 0;
 
@@ -216,7 +218,11 @@ async function handleMessage(message) {
   try {
     if (message.type === "buildDefault") {
       abortActiveSearch();
-      await buildRuntime(message.extraText || "");
+      await buildRuntime(
+        message.extraText || "",
+        message.dynamicCustom == null ? Boolean(message.extraText) : message.dynamicCustom
+      );
+      startBackgroundShardWarmup();
       self.postMessage({
         type: "built",
         id: message.id,
@@ -228,7 +234,11 @@ async function handleMessage(message) {
 
     if (message.type === "build" || message.type === "append") {
       abortActiveSearch();
-      await buildRuntime(message.text || "");
+      await buildRuntime(
+        message.text || "",
+        message.dynamicCustom == null ? Boolean(message.text) : message.dynamicCustom
+      );
+      startBackgroundShardWarmup();
       self.postMessage({
         type: "built",
         id: message.id,
@@ -673,13 +683,14 @@ function evictShard(start) {
   shardPromises.delete(start);
 }
 
-async function buildRuntime(extraText) {
+async function buildRuntime(extraText, dynamicCustom) {
   const started = now();
   await ensureIndex();
-  // Do not preload the largest shards here. The first query loads only the
-  // shards it needs, while subsequent queries reuse the in-memory shard cache.
+  // Do not block runtime construction on large shards. A small background
+  // warmup starts only after the built message is ready.
   clearSearchResultCache();
   runtimeVersion += 1;
+  forceDynamicClassification = Boolean(dynamicCustom);
   customEntries = [];
   customByStart = new Map();
   customByKey = new Map();
@@ -698,7 +709,7 @@ async function buildRuntime(extraText) {
       0,
       0,
       0,
-      CATEGORY_CONNECTION,
+      forceDynamicClassification ? CATEGORY_CONNECTION : CATEGORY_ONE_SHOT,
       entry.start,
       entry.end,
       entry.allowedAfter,
@@ -724,6 +735,28 @@ async function buildRuntime(extraText) {
     custom: customEntries.length,
     buildMs: Math.round(now() - started)
   };
+}
+
+function startBackgroundShardWarmup() {
+  // Local regression workers use file:// and synchronous filesystem-backed
+  // fetches; warming there only distorts the test harness and can starve the
+  // first request. Hosted builds use HTTP caching and benefit from the warmup.
+  if (typeof location !== "undefined" && String(location.href || "").startsWith("file:")) {
+    return;
+  }
+  if (useFullIndex || !shardCandidateCounts || !Object.keys(shardFiles).length) {
+    return;
+  }
+  const starts = Object.entries(shardCandidateCounts)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, BACKGROUND_WARMUP_SHARD_COUNT)
+    .map(([start]) => start);
+  if (!starts.length) {
+    return;
+  }
+  // Start the fetches without delaying the built message. A first query for a
+  // large initial syllable can then reuse the in-flight promise immediately.
+  loadShards(starts).catch(() => {});
 }
 
 function appendOnlineCandidateWords(words, lookup) {
@@ -760,6 +793,7 @@ function appendOnlineCandidateWords(words, lookup) {
   }
 
   if (selected.length) {
+    forceDynamicClassification = true;
     recalculateCustomEntries();
     runtimeVersion += 1;
     clearSearchResultCache();
@@ -1198,8 +1232,9 @@ function createSearchOptions(options) {
     language: options && (options.language === "en" || options.language === "ko") ? options.language : "",
     usedKeySet,
     hasUsedWords: usedKeySet.size > 0,
-    forceDynamic: customEntries.length > 0,
+    forceDynamic: forceDynamicClassification,
     usedStartCounts,
+    usedAffectedIndices: new Set(),
     stateCache: new Map(),
     followerCache: new Map(),
     oneShotCounterCache: new Map(),
@@ -1398,12 +1433,22 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
       continue;
     }
     if (options.hasUsedWords && !options.forceDynamic) {
+      const staticCat = getEntryCategory(index);
+      if (staticCat === CATEGORY_ONE_SHOT) {
+        oneShotIndices.push(index);
+        continue;
+      }
+      if (!usedStateMayChange(index, options)) {
+        if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
+        else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
+        else safeConnectionIndices.push(index);
+        continue;
+      }
       const followerCount = getAvailableFollowerCount(index, options);
       if (followerCount === 0) {
         oneShotIndices.push(index);
         continue;
       }
-      const staticCat = getEntryCategory(index);
       if (staticCat === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
       else if (staticCat === CATEGORY_BLUNDER) blunderIndices.push(index);
       else safeConnectionIndices.push(index);
@@ -1441,6 +1486,23 @@ function collectResults(candidates, oneShotOnly, pageSize, page, exactWord, exac
   );
 }
 
+function usedStateMayChange(index, options) {
+  if (!options || !options.hasUsedWords) {
+    return false;
+  }
+  if (isUsedIndex(index, options)) {
+    if (options.usedAffectedIndices) options.usedAffectedIndices.add(index);
+    return true;
+  }
+  const usedStarts = options.usedStartCounts;
+  if (!usedStarts || !usedStarts.size) {
+    return false;
+  }
+  const affected = getAllowedAfter(index).some((start) => usedStarts.has(start));
+  if (affected && options.usedAffectedIndices) options.usedAffectedIndices.add(index);
+  return affected;
+}
+
 function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
   const oneShotIndices = [];
   const alternativeIndices = [];
@@ -1448,8 +1510,14 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
   const connectionIndices = [];
 
   for (const index of candidates) {
+    const entry = getPackedEntry(index);
     const category = getEntryCategory(index);
-    if (category === CATEGORY_ONE_SHOT) {
+    // Forced endings are a display and classification rule, not merely a
+    // label-time override. Keep them out of the connection bucket so the
+    // ordering and category counts match the state shown to the user.
+    if (isForcedAlternativePacked(entry)) {
+      alternativeIndices.push(index);
+    } else if (category === CATEGORY_ONE_SHOT) {
       oneShotIndices.push(index);
     } else if (category === CATEGORY_ALTERNATIVE) {
       alternativeIndices.push(index);
@@ -1483,8 +1551,10 @@ function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord
   const blunderIndices = [];
   const connectionIndices = [];
   for (const index of candidates) {
+    const entry = getPackedEntry(index);
     const category = getEntryCategory(index);
-    if (category === CATEGORY_ONE_SHOT) oneShotIndices.push(index);
+    if (isForcedAlternativePacked(entry)) alternativeIndices.push(index);
+    else if (category === CATEGORY_ONE_SHOT) oneShotIndices.push(index);
     else if (category === CATEGORY_ALTERNATIVE) alternativeIndices.push(index);
     else if (category === CATEGORY_BLUNDER) blunderIndices.push(index);
     else connectionIndices.push(index);
@@ -1672,8 +1742,13 @@ function createConnectionIndexComparator(options) {
     return compareConnectionIndex;
   }
   return (left, right) => {
-    const leftFollowers = getAvailableFollowerCount(left, options);
-    const rightFollowers = getAvailableFollowerCount(right, options);
+    const affected = options.usedAffectedIndices;
+    const leftFollowers = affected && !affected.has(left)
+      ? getStaticFollowerCount(left)
+      : getAvailableFollowerCount(left, options);
+    const rightFollowers = affected && !affected.has(right)
+      ? getStaticFollowerCount(right)
+      : getAvailableFollowerCount(right, options);
     if (leftFollowers !== rightFollowers) {
       return leftFollowers - rightFollowers;
     }

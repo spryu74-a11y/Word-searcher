@@ -2239,7 +2239,9 @@ function initApp(core) {
   const USED_WORDS_STORAGE_KEY = "kkung-used-words-v1";
   const USED_WORD_CONTROLS_STORAGE_KEY = "kkung-used-word-controls-v1";
   const LANGUAGE_STORAGE_KEY = "kkung-language-v1";
-  const STATIC_WORD_PACK_MODE = false;
+  // API sources are build-time inputs. Search must never wait for a network
+  // lookup after the bundled dictionary has been built.
+  const STATIC_WORD_PACK_MODE = true;
   const ONLINE_PREFIX_CACHE_STORAGE_KEY = "kkung-online-prefix-cache-v16";
   const ONLINE_ONESHOT_PRELOAD_STORAGE_KEY = "kkung-online-oneshot-preload-v3";
   const OPENDICT_PROXY_ENDPOINT = "api/opendict/search";
@@ -3132,7 +3134,13 @@ function initApp(core) {
     state.worker.postMessage({
       type: "buildDefault",
       id: ++state.requestId,
-      extraText
+      extraText,
+      // The built-in 듸레 supplement must not force the 917k-entry dynamic
+      // classifier. Only user-entered text needs live recalculation.
+      dynamicCustom: Boolean(
+        String(elements.customDictionary.value || "").trim() ||
+        String(state.fileText || "").trim()
+      )
     });
   }
 
@@ -6414,7 +6422,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260713-r2", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260713-r3", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

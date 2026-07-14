@@ -95,12 +95,14 @@ def save_state(
     pending: deque[str],
     truncated_prefixes: list[str],
     request_count: int,
+    completed: bool,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "pending_prefixes": list(pending),
         "truncated_prefixes": truncated_prefixes,
         "request_count": request_count,
+        "completed": completed,
         "updated_at": int(time.time()),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -290,6 +292,9 @@ def main() -> None:
 
     if args.state.exists() and not args.restart:
         state = load_state(args.state)
+        if state.get("completed") and not args.prefix and not args.prefix_file:
+            print(f"already complete: {args.output} words={len(words)} requests={parse_int(state.get('request_count'))}")
+            return
         pending = deque(str(prefix) for prefix in state.get("pending_prefixes", []) if HANGUL_RE.fullmatch(str(prefix)))
         truncated_prefixes = [str(prefix) for prefix in state.get("truncated_prefixes", [])]
         request_count = parse_int(state.get("request_count"))
@@ -321,7 +326,7 @@ def main() -> None:
 
             if processed % args.save_every == 0:
                 write_words(args.output, words)
-                save_state(args.state, pending, truncated_prefixes, request_count)
+                save_state(args.state, pending, truncated_prefixes, request_count, False)
 
             print(
                 f"prefix={prefix} added={len(words) - old_count} "
@@ -332,7 +337,7 @@ def main() -> None:
                 break
     finally:
         write_words(args.output, words)
-        save_state(args.state, pending, truncated_prefixes, request_count)
+        save_state(args.state, pending, truncated_prefixes, request_count, not pending)
 
     print(f"wrote {args.output}")
     print(f"words={len(words)} requests={request_count} pending={len(pending)}")

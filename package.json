@@ -6,7 +6,8 @@
     "test:security": "node tools/frontend-security-test.js && node tools/search-worker-security-test.js",
     "test:performance": "node --expose-gc tools/search-performance-benchmark.js",
     "bench:search": "node --expose-gc tools/search-performance-benchmark.js",
-    "test:index": "python tools/validate_search_index.py"
+    "test:index": "python tools/validate_search_index.py",
+    "sync:api": "python tools/sync_api_dictionary.py"
   },
   "devDependencies": {}
 }
