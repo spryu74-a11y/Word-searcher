@@ -4,9 +4,11 @@
 정적 자산은 Cloudflare Assets에서 전달하고 `/api/opendict/search`만 Worker가
 처리하므로, 원본 Python 서버를 인터넷에 직접 노출하지 않습니다.
 
-1. `cloudflare`에서 `npm install` 후 `npm run check` 실행
-2. `npx wrangler@latest secret put OPENDICT_API_KEY` 실행
-3. Wrangler 4.36 이상으로 `npx wrangler@latest deploy` 실행
+1. 계정에서 Rate Limiting namespace를 2개 만들고
+   `wrangler.jsonc`의 `1001`, `1002` 예시 ID를 실제 고유 ID로 교체
+2. `cloudflare`에서 `npm install` 후 `npm run check` 실행
+3. `npx wrangler@latest secret put OPENDICT_API_KEY` 실행
+4. Wrangler 4.36 이상으로 `npx wrangler@latest deploy` 실행
 
 Rate Limiting binding의 namespace ID는 계정 내에서 고유해야 합니다. Worker의
 rate limit은 POP 단위로 동작하므로, 대규모 공격에는 Cloudflare WAF/Rate

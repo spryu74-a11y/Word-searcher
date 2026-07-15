@@ -93,6 +93,9 @@ export async function handleRequest(request, env = {}, ctx = {}, dependencies = 
   }
 
   const contentLength = parseNonNegativeInteger(request.headers.get("Content-Length"));
+  if (request.headers.has("Content-Length") && contentLength === null) {
+    return jsonError(400, "Invalid Content-Length.", request, url, requestId);
+  }
   if (request.body !== null || contentLength > 0) {
     return jsonError(413, "Request body is not accepted.", request, url, requestId);
   }
@@ -387,8 +390,16 @@ function validateSameOrigin(request, url) {
   if (origin && origin !== url.origin) {
     return "Cross-origin requests are not allowed.";
   }
-  if (request.headers.get("Sec-Fetch-Site") === "cross-site") {
+  const fetchSite = (request.headers.get("Sec-Fetch-Site") || "").trim().toLowerCase();
+  if (fetchSite === "cross-site" || fetchSite === "same-site") {
     return "Cross-site requests are not allowed.";
+  }
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    return "Unsupported fetch context.";
+  }
+  const fetchDest = (request.headers.get("Sec-Fetch-Dest") || "").trim().toLowerCase();
+  if (fetchDest && fetchDest !== "empty") {
+    return "Non-fetch requests are not allowed.";
   }
   return "";
 }
@@ -429,7 +440,6 @@ function jsonError(status, message, request, url, requestId = getRequestId(reque
 function apiHeaders(request, url, requestId) {
   const requestOrigin = request.headers.get("Origin");
   const headers = new Headers({
-    "Access-Control-Allow-Origin": requestOrigin === url.origin ? requestOrigin : url.origin,
     "Content-Security-Policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
@@ -440,6 +450,9 @@ function apiHeaders(request, url, requestId) {
     "X-Frame-Options": "DENY",
     "X-Request-ID": requestId
   });
+  if (requestOrigin === url.origin) {
+    headers.set("Access-Control-Allow-Origin", requestOrigin);
+  }
   return headers;
 }
 
@@ -465,9 +478,13 @@ function parseBoundedInteger(value, minimum, maximum, fallback) {
 }
 
 function parseNonNegativeInteger(value) {
-  if (!value || !/^[0-9]+$/.test(value)) {
-    return 0;
+  if (value === null || value === "") {
+    return null;
   }
-  const parsed = Number(value);
+  const normalized = String(value).trim();
+  if (!/^[0-9]+$/.test(normalized)) {
+    return null;
+  }
+  const parsed = Number(normalized);
   return Number.isSafeInteger(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }

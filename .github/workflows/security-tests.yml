@@ -40,6 +40,7 @@ jobs:
           node tools/search-worker-regression-test.js
           node tools/frontend-security-test.js
           node tools/search-worker-security-test.js
+          node --test cloudflare/test/worker.test.mjs
 
       - name: Run Python security tests
         run: |

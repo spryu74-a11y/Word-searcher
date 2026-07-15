@@ -94,6 +94,11 @@ class StaticPathTests(unittest.TestCase):
         self.assertFalse(proxy.static_path_is_allowed("/app.js", "debug=1"))
         self.assertFalse(proxy.static_path_is_allowed("/app.js", "v=ok&v=again"))
 
+    def test_static_target_cannot_escape_the_public_subtree(self) -> None:
+        private_target = (proxy.ROOT / ".git" / "config").resolve()
+        self.assertFalse(proxy.static_target_is_safe("/assets/preview.png", private_target))
+        self.assertFalse(proxy.static_target_is_safe("/index.html", private_target))
+
 
 class TrustedProxyTests(unittest.TestCase):
     def test_ignores_forwarded_ip_from_untrusted_peer(self) -> None:
@@ -267,6 +272,30 @@ class HttpIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, HTTPStatus.FORBIDDEN)
         self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_api_rejects_cross_site_subresource_requests(self) -> None:
+        status, _, _ = self.request(
+            "GET",
+            "/api/opendict/search?q=%EA%B0%80",
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+        self.assertEqual(status, HTTPStatus.FORBIDDEN)
+
+    def test_api_rejects_same_site_subresource_requests_without_an_allowlist(self) -> None:
+        status, _, _ = self.request(
+            "GET",
+            "/api/opendict/search?q=%EA%B0%80",
+            headers={"Sec-Fetch-Site": "same-site"},
+        )
+        self.assertEqual(status, HTTPStatus.FORBIDDEN)
+
+    def test_api_rejects_non_fetch_destinations(self) -> None:
+        status, _, _ = self.request(
+            "GET",
+            "/api/opendict/search?q=%EA%B0%80",
+            headers={"Sec-Fetch-Dest": "image"},
+        )
+        self.assertEqual(status, HTTPStatus.FORBIDDEN)
 
     def test_explicit_cors_allowlist_controls_preflight(self) -> None:
         with mock.patch.object(proxy, "ALLOWED_ORIGINS", frozenset({"https://client.example"})):

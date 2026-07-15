@@ -17,6 +17,8 @@ for (const [name, source] of [["index.html", html], ["app.js", app], ["search-wo
 assert.match(html, /http-equiv="Content-Security-Policy"/);
 assert.match(html, /script-src 'self'/);
 assert.match(html, /object-src 'none'/);
+assert.match(html, /script-src-attr 'none'/);
+assert.match(html, /require-trusted-types-for 'script'/);
 assert.match(html, /name="referrer" content="no-referrer"/);
 assert.ok(
   !/<a\b[^>]*target="_blank"(?![^>]*rel="[^"]*noreferrer)/i.test(html),

@@ -143,12 +143,17 @@ CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'; "
     "form-action 'self'; "
     "script-src 'self'; "
+    "script-src-attr 'none'; "
     "style-src 'self' 'unsafe-inline'; "
     "font-src 'self'; "
     "img-src 'self' data:; "
     "worker-src 'self'; "
     "connect-src 'self' https://wordrow.kr "
-    "https://r.jina.ai https://ko.wiktionary.org"
+    "https://r.jina.ai https://ko.wiktionary.org; "
+    "manifest-src 'self'; "
+    "media-src 'none'; "
+    "upgrade-insecure-requests; "
+    "require-trusted-types-for 'script'"
 )
 
 
@@ -419,6 +424,54 @@ def static_path_is_allowed(raw_path: str, raw_query: str = "") -> bool:
     if decoded_path.startswith("/assets/"):
         suffix = Path(decoded_path).suffix.lower()
         return suffix in STATIC_ASSET_EXTENSIONS
+    return False
+
+
+def path_has_symlink_component(path: Path, root: Path = ROOT_RESOLVED) -> bool:
+    """Return True when resolving *path* would follow a filesystem link.
+
+    SimpleHTTPRequestHandler follows symlinks by default.  URL allowlisting
+    alone is therefore insufficient: an attacker who can place a link under
+    ``assets/`` could make an apparently safe ``.png`` URL disclose a private
+    repository file.  Treat link components as untrusted even when they still
+    resolve below the repository root.
+    """
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError:
+        return True
+    current = root
+    for component in relative.parts:
+        current /= component
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def static_target_is_safe(decoded_path: str, resolved_target: Path) -> bool:
+    """Ensure a URL maps to the intended public tree, not just ROOT."""
+    resolved_target = resolved_target.resolve(strict=False)
+    if decoded_path == "/":
+        return resolved_target == ROOT_RESOLVED
+    if decoded_path in STATIC_ROOT_FILES or decoded_path in STATIC_DATA_FILES:
+        return resolved_target == (ROOT / decoded_path.lstrip("/")).resolve(strict=False)
+    if SHARD_PATH_RE.fullmatch(decoded_path):
+        shard_root = (ROOT / "data" / "search-index-shards").resolve(strict=False)
+        try:
+            resolved_target.relative_to(shard_root)
+        except ValueError:
+            return False
+        return resolved_target.suffix.lower() == ".json"
+    if decoded_path.startswith("/assets/"):
+        asset_root = (ROOT / "assets").resolve(strict=False)
+        try:
+            resolved_target.relative_to(asset_root)
+        except ValueError:
+            return False
+        return resolved_target.suffix.lower() in STATIC_ASSET_EXTENSIONS
     return False
 
 
@@ -812,6 +865,26 @@ class Handler(SimpleHTTPRequestHandler):
         return parsed
 
     def _authorize_origin(self, *, require_explicit: bool = False) -> bool:
+        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if fetch_site in {"cross-site", "same-site"}:
+            self.write_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": {"message": "Cross-site requests are not allowed."}},
+            )
+            return False
+        if fetch_site and fetch_site not in {"same-origin", "none"}:
+            self.write_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": {"message": "Unsupported fetch context."}},
+            )
+            return False
+        fetch_dest = (self.headers.get("Sec-Fetch-Dest") or "").strip().lower()
+        if fetch_dest and fetch_dest != "empty":
+            self.write_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": {"message": "Non-fetch requests are not allowed."}},
+            )
+            return False
         raw_origin = (self.headers.get("Origin") or "").strip()
         if not raw_origin:
             if require_explicit:
@@ -1098,8 +1171,12 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             target = ROOT.joinpath(*decoded_path.lstrip("/").split("/"))
         try:
+            if path_has_symlink_component(target):
+                return str(ROOT / "__blocked__")
             resolved = target.resolve()
             resolved.relative_to(ROOT_RESOLVED)
+            if not static_target_is_safe(decoded_path, resolved):
+                return str(ROOT / "__blocked__")
         except (OSError, ValueError):
             return str(ROOT / "__blocked__")
         return str(resolved)
@@ -1213,6 +1290,11 @@ def main() -> None:
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
+    if args.host.strip().lower() in {"0.0.0.0", "::", "::0"}:
+        if not ALLOWED_HOSTS:
+            parser.error("public binds require OPENDICT_ALLOWED_HOSTS")
+        if not ALLOWED_ORIGINS:
+            parser.error("public binds require OPENDICT_ALLOWED_ORIGINS")
 
     try:
         configured_key = load_api_key()

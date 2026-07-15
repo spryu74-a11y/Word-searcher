@@ -25,3 +25,17 @@
 `OPENDICT_API_KEY` 같은 비밀은 저장소, 브라우저 코드, URL, 로그에 넣지
 않습니다. 배포 플랫폼의 암호화된 Secret으로만 설정하고, 노출이 의심되면
 즉시 폐기한 뒤 새 키를 발급해야 합니다.
+
+## 프록시 운영 안전장치
+
+Python 프록시를 `0.0.0.0` 또는 `::`에 바인드하려면 다음 환경 변수를 모두
+설정해야 합니다.
+
+- `OPENDICT_ALLOWED_HOSTS`: 실제 서비스 Host만 쉼표로 나열
+- `OPENDICT_ALLOWED_ORIGINS`: 실제 HTTPS Origin만 쉼표로 나열
+
+설정이 없으면 공개 바인드는 시작 단계에서 거부됩니다. 인터넷 공개가
+필요하다면 원본 Python 서버를 직접 노출하지 말고 TLS와 WAF/Rate Limiting을
+제공하는 신뢰할 수 있는 엣지 뒤에 배치하세요. 프록시와 Worker는
+`Sec-Fetch-Site`/`Sec-Fetch-Dest`를 검사해 교차 사이트 서브리소스 요청을
+차단하지만, 이것만으로 대규모 네트워크 DDoS를 해결할 수는 없습니다.
