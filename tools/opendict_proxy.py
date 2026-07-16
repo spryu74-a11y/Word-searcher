@@ -272,8 +272,18 @@ def parse_trusted_proxy_cidrs(raw_value: str) -> tuple[ipaddress._BaseNetwork, .
     return tuple(networks)
 
 
-ALLOWED_ORIGINS = parse_allowed_origins(os.environ.get("OPENDICT_ALLOWED_ORIGINS", ""))
-ALLOWED_HOSTS = parse_allowed_hosts(os.environ.get("OPENDICT_ALLOWED_HOSTS", ""))
+# Render supplies the service's canonical public host and URL automatically.
+# Keep explicit application settings authoritative, while using those trusted
+# platform values as safe defaults so a Render web service can start without
+# duplicating its generated hostname in the dashboard.
+RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+ALLOWED_ORIGINS = parse_allowed_origins(
+    os.environ.get("OPENDICT_ALLOWED_ORIGINS", "").strip() or RENDER_EXTERNAL_URL
+)
+ALLOWED_HOSTS = parse_allowed_hosts(
+    os.environ.get("OPENDICT_ALLOWED_HOSTS", "").strip() or RENDER_EXTERNAL_HOSTNAME
+)
 TRUSTED_PROXY_NETWORKS = parse_trusted_proxy_cidrs(os.environ.get("OPENDICT_TRUSTED_PROXY_CIDRS", ""))
 ENABLE_HSTS = env_bool("OPENDICT_ENABLE_HSTS", False)
 
