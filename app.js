@@ -2838,6 +2838,7 @@ function initApp(core) {
     state.worker = createInlineWorkerFallback(core, {
       textUrl: defaultDictionaryTextUrl,
       metaUrl: defaultDictionaryMetaUrl,
+      scriptUrl: defaultDictionaryScriptUrl,
       fallbackText: fallbackDefaultText
     });
     attachWorkerHandlers(state.worker);
@@ -6496,8 +6497,60 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
       ? dictionaryAssets
       : { fallbackText: dictionaryAssets };
   const fallbackDefaultText = assets.fallbackText || core.FALLBACK_DICTIONARY;
+  let defaultTextPromise = null;
   let listener = null;
   let dictionary = null;
+
+  async function loadDefaultDictionaryText() {
+    if (!defaultTextPromise) {
+      defaultTextPromise = (async () => {
+        const embeddedText = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
+        if (embeddedText.length > fallbackDefaultText.length) {
+          return embeddedText;
+        }
+
+        const textUrl = String(assets.textUrl || "");
+        if (textUrl && typeof fetch === "function") {
+          try {
+            const response = await fetch(textUrl, {
+              cache: "force-cache",
+              credentials: "omit",
+              redirect: "error",
+              referrerPolicy: "no-referrer"
+            });
+            if (response.ok) {
+              const text = await response.text();
+              if (text.length > fallbackDefaultText.length) {
+                return text;
+              }
+            }
+          } catch {
+            // Local file pages may block fetch; try the same-origin script below.
+          }
+        }
+
+        const scriptUrl = String(assets.scriptUrl || "");
+        if (scriptUrl && typeof document !== "undefined" && document.head) {
+          await new Promise((resolve) => {
+            const script = document.createElement("script");
+            script.src = scriptUrl;
+            script.async = true;
+            script.onload = resolve;
+            script.onerror = resolve;
+            document.head.appendChild(script);
+          });
+          const text = String(window.KKUNG_DEFAULT_DICTIONARY_TEXT || "");
+          if (text.length > fallbackDefaultText.length) {
+            return text;
+          }
+        }
+
+        return fallbackDefaultText;
+      })();
+    }
+    return defaultTextPromise;
+  }
+
   return {
     __isInlineFallback: true,
     set onmessage(next) {
@@ -6508,7 +6561,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
         try {
           if (message.type === "buildDefault") {
             const extraText = message.extraText || "";
-            const baseText = fallbackDefaultText || core.FALLBACK_DICTIONARY;
+            const baseText = await loadDefaultDictionaryText();
             dictionary = core.createDictionary(extraText ? `${baseText}\n${extraText}` : baseText);
             listener({
               data: {
@@ -6532,7 +6585,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
           }
           if (message.type === "append") {
             if (!dictionary) {
-              dictionary = core.createDictionary(fallbackDefaultText || core.FALLBACK_DICTIONARY);
+              dictionary = core.createDictionary(await loadDefaultDictionaryText());
             }
             dictionary = core.extendDictionary(dictionary, message.text || "");
             listener({
@@ -6546,7 +6599,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
           }
           if (message.type === "appendOnlineCandidates") {
             if (!dictionary) {
-              dictionary = core.createDictionary(fallbackDefaultText || core.FALLBACK_DICTIONARY);
+              dictionary = core.createDictionary(await loadDefaultDictionaryText());
             }
             const selected = core.selectOnlineWords(
               dictionary,
@@ -6570,7 +6623,7 @@ function createInlineWorkerFallback(core, dictionaryAssets) {
           }
           if (message.type === "search") {
             if (!dictionary) {
-              dictionary = core.createDictionary(fallbackDefaultText || core.FALLBACK_DICTIONARY);
+              dictionary = core.createDictionary(await loadDefaultDictionaryText());
             }
             const payload = core.searchDictionary(dictionary, message.options || {});
             listener({ data: { type: "searchResult", id: message.id, payload } });
