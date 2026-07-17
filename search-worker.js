@@ -1123,7 +1123,7 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     sourceMode,
     options.language === "en" ? "en" : options.language === "ko" ? "ko" : "",
     options.oneShotOnly ? "1" : "0",
-    options.longWordMode ? "1" : "0",
+    options.longWordMode && !options.oneShotOnly ? "1" : "0",
     String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
     String(Math.max(1, Math.floor(Number(page)) || 1)),
     String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT))
@@ -1244,7 +1244,7 @@ function createSearchOptions(options) {
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     language: options && (options.language === "en" || options.language === "ko") ? options.language : "",
-    longWordMode: Boolean(options && options.longWordMode),
+    longWordMode: Boolean(options && options.longWordMode && !options.oneShotOnly),
     usedKeySet,
     hasUsedWords: usedKeySet.size > 0,
     forceDynamic: forceDynamicClassification,
@@ -1788,13 +1788,16 @@ function compareConnectionIndex(left, right) {
 function compareIndexWordLength(left, right) {
   const leftLength = entryWord(left).length;
   const rightLength = entryWord(right).length;
-  if (leftLength !== rightLength) {
-    return rightLength - leftLength;
-  }
-  return compareIndexReading(left, right);
+  return rightLength - leftLength;
 }
 
 function compareConnectionIndexWithOptions(left, right, leftFollowers, rightFollowers, options) {
+  if (options && options.longWordMode) {
+    const lengthCompare = compareIndexWordLength(left, right);
+    if (lengthCompare) {
+      return lengthCompare;
+    }
+  }
   if (leftFollowers !== rightFollowers) {
     return leftFollowers - rightFollowers;
   }

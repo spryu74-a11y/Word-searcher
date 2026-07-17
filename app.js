@@ -1652,11 +1652,11 @@
     entries.sort((left, right) => {
       const leftFollowers = Number(left.followerCount) || 0;
       const rightFollowers = Number(right.followerCount) || 0;
-      if (leftFollowers !== rightFollowers) {
-        return leftFollowers - rightFollowers;
-      }
       if (options && options.longWordMode && left.word.length !== right.word.length) {
         return right.word.length - left.word.length;
+      }
+      if (leftFollowers !== rightFollowers) {
+        return leftFollowers - rightFollowers;
       }
 
       return compareReading(left, right);
@@ -2180,9 +2180,10 @@
     const oneShotOnly = Boolean(options.oneShotOnly);
     const sourceMode = options.sourceMode === "reply" ? "reply" : "starts";
     const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
+    const longWordMode = Boolean(options.longWordMode) && !oneShotOnly;
     const searchOptions = {
       oneShotOnly,
-      longWordMode: Boolean(options.longWordMode),
+      longWordMode,
       language: options.language === "en" ? "en" : options.language === "ko" ? "ko" : "",
       pageSize,
       page,
@@ -3012,10 +3013,7 @@ function initApp(core) {
     setOneShotOnly(elements.oneShotOnly.checked, true);
   });
   addSearchEventListener(elements.longWordMode, "change", () => {
-    state.page = 1;
-    clearSearchResultCache();
-    state.lastRenderedSearchSignature = "";
-    scheduleSearch(0, true);
+    setLongWordMode(elements.longWordMode.checked, true);
   });
   if (elements.settingsOneShotOnly) {
     addSearchEventListener(elements.settingsOneShotOnly, "change", () => {
@@ -3849,9 +3847,28 @@ function initApp(core) {
   function setOneShotOnly(isChecked, resetPage) {
     const nextChecked = Boolean(isChecked);
     elements.oneShotOnly.checked = nextChecked;
+    if (nextChecked) {
+      elements.longWordMode.checked = false;
+    }
     if (elements.settingsOneShotOnly) {
       elements.settingsOneShotOnly.checked = nextChecked;
     }
+    clearSearchResultCache();
+    state.lastRenderedSearchSignature = "";
+    scheduleSearch(0, Boolean(resetPage));
+  }
+
+  function setLongWordMode(isChecked, resetPage) {
+    const nextChecked = Boolean(isChecked);
+    elements.longWordMode.checked = nextChecked;
+    if (nextChecked) {
+      elements.oneShotOnly.checked = false;
+      if (elements.settingsOneShotOnly) {
+        elements.settingsOneShotOnly.checked = false;
+      }
+    }
+    clearSearchResultCache();
+    state.lastRenderedSearchSignature = "";
     scheduleSearch(0, Boolean(resetPage));
   }
 
@@ -6496,7 +6513,7 @@ let searchWorkerTrustedTypesPolicy = null;
 
 function getTrustedSearchWorkerUrl() {
   const workerUrl = new URL(
-    "./search-worker.js?v=instant-search-20260717-r13",
+    "./search-worker.js?v=instant-search-20260717-r14",
     window.location.href
   );
   const workerUrlText = workerUrl.toString();

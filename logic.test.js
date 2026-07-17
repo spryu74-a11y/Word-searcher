@@ -164,6 +164,18 @@ const oneShotPriority = logic.searchDictionary(priorityDictionary, {
 assert.strictEqual(oneShotPriority.results[0].word, "가끝");
 assert.ok(oneShotPriority.results[0].oneShot);
 
+const mutuallyExclusiveModes = logic.searchDictionary(priorityDictionary, {
+  query: "\uac00",
+  sourceMode: "starts",
+  oneShotOnly: true,
+  longWordMode: true,
+  pageSize: 20
+});
+assert.deepStrictEqual(
+  mutuallyExclusiveModes.results.map((entry) => entry.word),
+  oneShotPriority.results.map((entry) => entry.word)
+);
+
 const normalPriority = logic.searchDictionary(priorityDictionary, {
   query: "가",
   sourceMode: "starts",
@@ -195,8 +207,11 @@ assert.strictEqual(connectionFollowerPriority.results[1].word, "가나");
 assert.strictEqual(connectionFollowerPriority.results[1].followerCount, 2);
 
 const longWordPriorityDictionary = logic.createDictionary([
-  "\uac00\ub098",
-  "\uac00\ub098\ub098",
+  "\uac00\ub2e4",
+  "\uac00\ub2e4\ub77c",
+  "\ub2e4\ub098",
+  "\ub2e4\ub098\ub098",
+  "\ub77c\ub2e4",
   "\ub098\uac00",
   "\ub098\ub098"
 ].join("\n"));
@@ -216,14 +231,17 @@ const longWordPriority = logic.searchDictionary(longWordPriorityDictionary, {
 });
 assert.deepStrictEqual(
   normalLongWordPriority.results.map((entry) => entry.word),
-  ["\uac00\ub098", "\uac00\ub098\ub098"]
+  ["\uac00\ub2e4", "\uac00\ub2e4\ub77c"]
 );
 assert.deepStrictEqual(
   longWordPriority.results.map((entry) => entry.word),
-  ["\uac00\ub098\ub098", "\uac00\ub098"]
+  ["\uac00\ub2e4\ub77c", "\uac00\ub2e4"]
 );
 assert.ok(longWordPriority.results.every((entry) => !entry.oneShot && !entry.alternativeOneShot && !entry.blunder));
-assert.strictEqual(longWordPriority.results[0].followerCount, longWordPriority.results[1].followerCount);
+assert.strictEqual(normalLongWordPriority.results[0].followerCount, 2);
+assert.strictEqual(normalLongWordPriority.results[1].followerCount, 3);
+assert.strictEqual(longWordPriority.results[0].followerCount, 3);
+assert.strictEqual(longWordPriority.results[1].followerCount, 2);
 
 const connectionExactFollowerPriority = logic.searchDictionary(connectionFollowerPriorityDictionary, {
   query: "가나",
