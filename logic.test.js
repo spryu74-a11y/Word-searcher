@@ -194,6 +194,37 @@ assert.strictEqual(connectionFollowerPriority.results[0].followerCount, 1);
 assert.strictEqual(connectionFollowerPriority.results[1].word, "가나");
 assert.strictEqual(connectionFollowerPriority.results[1].followerCount, 2);
 
+const longWordPriorityDictionary = logic.createDictionary([
+  "\uac00\ub098",
+  "\uac00\ub098\ub098",
+  "\ub098\uac00",
+  "\ub098\ub098"
+].join("\n"));
+const normalLongWordPriority = logic.searchDictionary(longWordPriorityDictionary, {
+  query: "\uac00",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  longWordMode: false,
+  pageSize: 10
+});
+const longWordPriority = logic.searchDictionary(longWordPriorityDictionary, {
+  query: "\uac00",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  longWordMode: true,
+  pageSize: 10
+});
+assert.deepStrictEqual(
+  normalLongWordPriority.results.map((entry) => entry.word),
+  ["\uac00\ub098", "\uac00\ub098\ub098"]
+);
+assert.deepStrictEqual(
+  longWordPriority.results.map((entry) => entry.word),
+  ["\uac00\ub098\ub098", "\uac00\ub098"]
+);
+assert.ok(longWordPriority.results.every((entry) => !entry.oneShot && !entry.alternativeOneShot && !entry.blunder));
+assert.strictEqual(longWordPriority.results[0].followerCount, longWordPriority.results[1].followerCount);
+
 const connectionExactFollowerPriority = logic.searchDictionary(connectionFollowerPriorityDictionary, {
   query: "가나",
   sourceMode: "reply",

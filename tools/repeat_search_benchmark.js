@@ -194,7 +194,8 @@ function createHarness(worker) {
         bypassCache: process.env.SEARCH_BENCH_BYPASS_CACHE === "1",
         usedKeys: [],
         page: 1,
-        pageSize: 50
+        pageSize: 50,
+        deferCounterWords: true
       }
     });
     return promise;

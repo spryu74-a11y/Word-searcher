@@ -907,7 +907,7 @@ body.app-loading .composer-input input {
 
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
@@ -1549,7 +1549,7 @@ body.settings-channel .member-panel {
   .composer {
     grid-row: 5;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(96px, auto);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(58px, auto);
     align-items: center;
     gap: 8px;
     border-top: 1px solid var(--line);
@@ -1570,6 +1570,11 @@ body.settings-channel .member-panel {
     grid-row: 2;
   }
 
+  .long-word-filter {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
   .composer-input input,
   .check-pill,
   .send-button {
@@ -1585,7 +1590,7 @@ body.settings-channel .member-panel {
   }
 
   .send-button {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 2;
     min-width: 58px;
   }
@@ -1712,7 +1717,7 @@ body.settings-channel .member-panel {
   }
 
   .composer {
-    grid-template-columns: minmax(0, 1fr) minmax(94px, auto);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(52px, auto);
     gap: 6px;
   }
 

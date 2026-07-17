@@ -153,7 +153,8 @@ CONTENT_SECURITY_POLICY = (
     "manifest-src 'self'; "
     "media-src 'none'; "
     "upgrade-insecure-requests; "
-    "require-trusted-types-for 'script'"
+    "require-trusted-types-for 'script'; "
+    "trusted-types kkung-worker"
 )
 
 

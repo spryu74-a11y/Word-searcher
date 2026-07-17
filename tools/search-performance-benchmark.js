@@ -124,6 +124,7 @@ function createClient(worker) {
           usedKeys: [],
           page: 1,
           pageSize: 50,
+          deferCounterWords: true,
           bypassCache: true,
           legacyFullSort: Boolean(legacyFullSort)
         }

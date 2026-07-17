@@ -1037,7 +1037,8 @@ async function searchDictionary(options, context) {
         pageSize,
         page,
         exactWord,
-        exactReading
+        exactReading,
+        searchOptions
       )
     : collectResults(
         filteredCandidates,
@@ -1122,6 +1123,7 @@ function getSearchResultCacheKey(options, queryInfo, sourceMode, pageSize, page)
     sourceMode,
     options.language === "en" ? "en" : options.language === "ko" ? "ko" : "",
     options.oneShotOnly ? "1" : "0",
+    options.longWordMode ? "1" : "0",
     String(Math.max(0, Math.floor(Number(options.usedVersion)) || 0)),
     String(Math.max(1, Math.floor(Number(page)) || 1)),
     String(Math.max(1, Math.floor(Number(pageSize)) || DEFAULT_LIMIT))
@@ -1242,6 +1244,7 @@ function createSearchOptions(options) {
   const usedStartCounts = createUsedStartCounts(usedKeySet);
   return {
     language: options && (options.language === "en" || options.language === "ko") ? options.language : "",
+    longWordMode: Boolean(options && options.longWordMode),
     usedKeySet,
     hasUsedWords: usedKeySet.size > 0,
     forceDynamic: forceDynamicClassification,
@@ -1590,7 +1593,7 @@ function collectResultsFast(candidates, oneShotOnly, pageSize, page, exactWord, 
 // Benchmark-only control path.  Keeping it here makes the performance report
 // reproducible against the exact previous full-sort behavior without exposing
 // it to the UI.
-function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord, exactReading) {
+function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord, exactReading, options) {
   const oneShotIndices = [];
   const alternativeIndices = [];
   const blunderIndices = [];
@@ -1607,7 +1610,7 @@ function collectResultsLegacy(candidates, oneShotOnly, pageSize, page, exactWord
   sortIndexGroup(oneShotIndices, exactWord, exactReading);
   sortIndexGroup(alternativeIndices, exactWord, exactReading);
   blunderIndices.sort((left, right) => compareBlunderIndexGroup(left, right, exactWord, exactReading));
-  sortConnectionIndexGroup(connectionIndices);
+  sortConnectionIndexGroup(connectionIndices, options);
   const categoryCounts = {
     oneShot: oneShotIndices.length,
     alternativeOneShot: alternativeIndices.length,
@@ -1782,9 +1785,35 @@ function compareConnectionIndex(left, right) {
   return compareIndexReading(left, right);
 }
 
+function compareIndexWordLength(left, right) {
+  const leftLength = entryWord(left).length;
+  const rightLength = entryWord(right).length;
+  if (leftLength !== rightLength) {
+    return rightLength - leftLength;
+  }
+  return compareIndexReading(left, right);
+}
+
+function compareConnectionIndexWithOptions(left, right, leftFollowers, rightFollowers, options) {
+  if (leftFollowers !== rightFollowers) {
+    return leftFollowers - rightFollowers;
+  }
+  return options && options.longWordMode
+    ? compareIndexWordLength(left, right)
+    : compareIndexReading(left, right);
+}
+
 function createConnectionIndexComparator(options) {
   if (!options || !options.hasUsedWords) {
-    return compareConnectionIndex;
+    return options && options.longWordMode
+      ? (left, right) => compareConnectionIndexWithOptions(
+          left,
+          right,
+          Number(getPackedEntry(left)[ENTRY_FOLLOWER_COUNT]) || 0,
+          Number(getPackedEntry(right)[ENTRY_FOLLOWER_COUNT]) || 0,
+          options
+        )
+      : compareConnectionIndex;
   }
   return (left, right) => {
     const affected = options.usedAffectedIndices;
@@ -1794,10 +1823,7 @@ function createConnectionIndexComparator(options) {
     const rightFollowers = affected && !affected.has(right)
       ? getStaticFollowerCount(right)
       : getAvailableFollowerCount(right, options);
-    if (leftFollowers !== rightFollowers) {
-      return leftFollowers - rightFollowers;
-    }
-    return compareIndexReading(left, right);
+    return compareConnectionIndexWithOptions(left, right, leftFollowers, rightFollowers, options);
   };
 }
 
@@ -1836,14 +1862,11 @@ function compareBlunderIndexGroup(left, right, exactWord, exactReading) {
   return compareIndexReading(left, right);
 }
 
-function sortConnectionIndexGroup(indices) {
+function sortConnectionIndexGroup(indices, options) {
   indices.sort((left, right) => {
     const leftFollowers = Number(getPackedEntry(left)[ENTRY_FOLLOWER_COUNT]) || 0;
     const rightFollowers = Number(getPackedEntry(right)[ENTRY_FOLLOWER_COUNT]) || 0;
-    if (leftFollowers !== rightFollowers) {
-      return leftFollowers - rightFollowers;
-    }
-    return compareIndexReading(left, right);
+    return compareConnectionIndexWithOptions(left, right, leftFollowers, rightFollowers, options);
   });
 }
 

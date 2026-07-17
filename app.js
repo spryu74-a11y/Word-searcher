@@ -1583,7 +1583,7 @@
 
     sortSearchGroup(oneShots, exactWord, exactReading);
     sortSearchGroup(alternatives, exactWord, exactReading);
-    sortConnectionGroup(safeConnections);
+    sortConnectionGroup(safeConnections, options);
     sortBlunderGroup(blunders, exactWord, exactReading);
 
     const categoryCounts = {
@@ -1648,12 +1648,15 @@
     });
   }
 
-  function sortConnectionGroup(entries) {
+  function sortConnectionGroup(entries, options) {
     entries.sort((left, right) => {
       const leftFollowers = Number(left.followerCount) || 0;
       const rightFollowers = Number(right.followerCount) || 0;
       if (leftFollowers !== rightFollowers) {
         return leftFollowers - rightFollowers;
+      }
+      if (options && options.longWordMode && left.word.length !== right.word.length) {
+        return right.word.length - left.word.length;
       }
 
       return compareReading(left, right);
@@ -2179,6 +2182,7 @@
     const usedKeySet = createUsedKeySet(dictionary, options.usedKeys);
     const searchOptions = {
       oneShotOnly,
+      longWordMode: Boolean(options.longWordMode),
       language: options.language === "en" ? "en" : options.language === "ko" ? "ko" : "",
       pageSize,
       page,
@@ -2372,7 +2376,7 @@ function initApp(core) {
   const SEARCH_SLOW_NOTICE_MS = 8000;
   const SEARCH_TIMEOUT_MS = 20000;
   const SEARCH_WORKER_RESTART_AFTER_MS = 1200;
-  const SEARCH_DEBOUNCE_MS = 0;
+  const SEARCH_DEBOUNCE_MS = 80;
   const SEARCH_MIN_QUERY_LENGTH = 1;
   const SEARCH_MAX_QUERY_LENGTH = core.MAX_SEARCH_QUERY_LENGTH || 80;
   const SEARCH_RESULT_CACHE_MAX = 500;
@@ -2416,6 +2420,7 @@ function initApp(core) {
     guildSearch: document.getElementById("guildSearch"),
     guildSettings: document.getElementById("guildSettings"),
     oneShotOnly: document.getElementById("oneShotOnly"),
+    longWordMode: document.getElementById("longWordMode"),
     panelBackdrop: document.getElementById("panelBackdrop"),
     queryInput: document.getElementById("queryInput"),
     readingPreview: document.getElementById("readingPreview"),
@@ -3006,6 +3011,12 @@ function initApp(core) {
   addSearchEventListener(elements.oneShotOnly, "change", () => {
     setOneShotOnly(elements.oneShotOnly.checked, true);
   });
+  addSearchEventListener(elements.longWordMode, "change", () => {
+    state.page = 1;
+    clearSearchResultCache();
+    state.lastRenderedSearchSignature = "";
+    scheduleSearch(0, true);
+  });
   if (elements.settingsOneShotOnly) {
     addSearchEventListener(elements.settingsOneShotOnly, "change", () => {
       setOneShotOnly(elements.settingsOneShotOnly.checked, true);
@@ -3504,6 +3515,7 @@ function initApp(core) {
         sourceMode: state.sourceMode,
         language: state.language,
         oneShotOnly: elements.oneShotOnly.checked,
+        longWordMode: elements.longWordMode.checked,
         usedKeys: Array.from(state.usedWordIds),
         usedVersion: state.usedVersion,
         page: state.page,
@@ -3733,6 +3745,7 @@ function initApp(core) {
       state.sourceMode,
       state.language,
       elements.oneShotOnly.checked ? "1" : "0",
+      elements.longWordMode.checked ? "1" : "0",
       String(state.usedVersion),
       String(state.page),
       String(getPageSize())
@@ -6462,6 +6475,7 @@ function initApp(core) {
     elements.endQueryInput.disabled = state.appLoading;
     elements.endQueryInput.setAttribute("aria-disabled", state.appLoading ? "true" : "false");
     elements.oneShotOnly.disabled = state.appLoading;
+    elements.longWordMode.disabled = state.appLoading;
     if (elements.settingsLanguage) {
       elements.settingsLanguage.disabled = state.appLoading;
     }
@@ -6478,14 +6492,45 @@ function initApp(core) {
   }
 }
 
+let searchWorkerTrustedTypesPolicy = null;
+
+function getTrustedSearchWorkerUrl() {
+  const workerUrl = new URL(
+    "./search-worker.js?v=instant-search-20260717-r13",
+    window.location.href
+  );
+  const workerUrlText = workerUrl.toString();
+  if (!window.trustedTypes || typeof window.trustedTypes.createPolicy !== "function") {
+    return workerUrlText;
+  }
+
+  if (!searchWorkerTrustedTypesPolicy) {
+    searchWorkerTrustedTypesPolicy = window.trustedTypes.createPolicy("kkung-worker", {
+      createScriptURL(value) {
+        const candidate = new URL(String(value), window.location.href);
+        if (
+          candidate.origin !== workerUrl.origin ||
+          candidate.protocol !== workerUrl.protocol ||
+          candidate.pathname !== workerUrl.pathname ||
+          candidate.username ||
+          candidate.password ||
+          candidate.hash
+        ) {
+          throw new TypeError("invalid search worker URL");
+        }
+        return candidate.toString();
+      }
+    });
+  }
+  return searchWorkerTrustedTypesPolicy.createScriptURL(workerUrlText);
+}
+
 function createSearchWorker(core, dictionaryAssets) {
   if (typeof Worker === "undefined") {
     return createInlineWorkerFallback(core, dictionaryAssets);
   }
   try {
-    return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260717-r11", window.location.href)
-    );
+    return new Worker(getTrustedSearchWorkerUrl());
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);
   }
