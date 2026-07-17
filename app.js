@@ -6484,7 +6484,7 @@ function createSearchWorker(core, dictionaryAssets) {
   }
   try {
     return new Worker(
-      new URL("./search-worker.js?v=instant-search-20260714-r6", window.location.href)
+      new URL("./search-worker.js?v=instant-search-20260717-r11", window.location.href)
     );
   } catch {
     return createInlineWorkerFallback(core, dictionaryAssets);

@@ -20,7 +20,9 @@ const MAX_TRACE_ID_LENGTH = 128;
 const MAX_INDEX_ENTRIES = 2000000;
 const MAX_MANIFEST_SHARDS = 12000;
 const MAX_SHARD_ENTRIES = 100000;
-const MAX_MANIFEST_RESPONSE_BYTES = 1024 * 1024;
+// Keep enough headroom for generated manifests so a valid manifest never falls
+// through to the huge full index when its shard list grows.
+const MAX_MANIFEST_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_SHARD_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_FULL_INDEX_RESPONSE_BYTES = 128 * 1024 * 1024;
 const ALLOWED_MESSAGE_TYPES = new Set([
@@ -52,9 +54,12 @@ const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const MAX_COUNTER_REPLY_WORDS = 12;
 // Keep in sync with app.js and tools/build_search_index.py.
 const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨"]);
-const SHARD_CACHE_MAX = 160;
-const SHARD_CACHE_TTL_MS = 10 * 60 * 1000;
-const BACKGROUND_WARMUP_SHARD_COUNT = 4;
+// Parsed shards are much larger in memory than their JSON files. Bound the
+// cache and load broad requests in small batches to prevent browser OOMs.
+const SHARD_CACHE_MAX = 8;
+const SHARD_CACHE_TTL_MS = 60 * 1000;
+const MAX_SHARDS_PER_REQUEST = 16;
+const SHARD_LOAD_BATCH_SIZE = 4;
 const SEARCH_RESULT_CACHE_MAX = 150;
 const SINGLE_CHAR_RESULT_CACHE_MAX = 150;
 const TWO_CHAR_RESULT_CACHE_MAX = 200;
@@ -223,7 +228,6 @@ async function handleMessage(message) {
         message.extraText || "",
         message.dynamicCustom == null ? Boolean(message.extraText) : message.dynamicCustom
       );
-      startBackgroundShardWarmup();
       self.postMessage({
         type: "built",
         id: message.id,
@@ -239,7 +243,6 @@ async function handleMessage(message) {
         message.text || "",
         message.dynamicCustom == null ? Boolean(message.text) : message.dynamicCustom
       );
-      startBackgroundShardWarmup();
       self.postMessage({
         type: "built",
         id: message.id,
@@ -476,7 +479,8 @@ async function ensureIndex() {
       })
       .catch((error) => {
         warnWorker("manifest 로딩 실패, 전체 인덱스로 전환합니다", error);
-        return loadFullIndex();
+        indexPromise = null;
+        throw error;
       })
       .catch((error) => {
         indexPromise = null;
@@ -528,13 +532,19 @@ function loadFullIndex() {
     });
 }
 
-async function loadShards(starts, signal) {
+async function loadShards(starts, signal, options) {
   await ensureIndex();
   throwIfAborted(signal);
   if (useFullIndex) {
     return;
   }
   const uniqueStarts = Array.from(new Set((starts || []).filter(Boolean)));
+  if (uniqueStarts.length > MAX_SHARDS_PER_REQUEST) {
+    for (let offset = 0; offset < uniqueStarts.length; offset += SHARD_LOAD_BATCH_SIZE) {
+      await loadShards(uniqueStarts.slice(offset, offset + SHARD_LOAD_BATCH_SIZE), signal, options);
+    }
+    return;
+  }
   await Promise.all(
     uniqueStarts.map((start) =>
       loadShard(start, signal).catch((error) => {
@@ -543,7 +553,13 @@ async function loadShards(starts, signal) {
     )
   );
   throwIfAborted(signal);
-  trimShardCache(uniqueStarts);
+  const protectedStarts = new Set(uniqueStarts);
+  for (const start of (options && options.protectedStarts) || []) {
+    if (start) {
+      protectedStarts.add(start);
+    }
+  }
+  trimShardCache(Array.from(protectedStarts));
 }
 
 async function loadShard(start, signal) {
@@ -736,28 +752,6 @@ async function buildRuntime(extraText, dynamicCustom) {
     custom: customEntries.length,
     buildMs: Math.round(now() - started)
   };
-}
-
-function startBackgroundShardWarmup() {
-  // Local regression workers use file:// and synchronous filesystem-backed
-  // fetches; warming there only distorts the test harness and can starve the
-  // first request. Hosted builds use HTTP caching and benefit from the warmup.
-  if (typeof location !== "undefined" && String(location.href || "").startsWith("file:")) {
-    return;
-  }
-  if (useFullIndex || !shardCandidateCounts || !Object.keys(shardFiles).length) {
-    return;
-  }
-  const starts = Object.entries(shardCandidateCounts)
-    .sort((left, right) => right[1] - left[1])
-    .slice(0, BACKGROUND_WARMUP_SHARD_COUNT)
-    .map(([start]) => start);
-  if (!starts.length) {
-    return;
-  }
-  // Start the fetches without delaying the built message. A first query for a
-  // large initial syllable can then reuse the in-flight promise immediately.
-  loadShards(starts).catch(() => {});
 }
 
 function appendOnlineCandidateWords(words, lookup) {
