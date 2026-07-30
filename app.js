@@ -28,7 +28,7 @@
   const MAX_COUNTER_REPLY_WORDS = 12;
   // These endings are always shown as 대체한방. Keep this list in sync with
   // the offline index builder and the search worker.
-  const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨"]);
+  const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨", "늬"]);
   const SURFACE_FORM_LEMMA_SUFFIXES = [
     ["져", "지다"],
     ["겨", "기다"],
@@ -1641,7 +1641,7 @@
       const leftOneShot = Number(left.oneShotReplyCount) || 0;
       const rightOneShot = Number(right.oneShotReplyCount) || 0;
       if (leftOneShot !== rightOneShot) {
-        return rightOneShot - leftOneShot;
+        return leftOneShot - rightOneShot;
       }
 
       return compareReading(left, right);
@@ -6513,7 +6513,7 @@ let searchWorkerTrustedTypesPolicy = null;
 
 function getTrustedSearchWorkerUrl() {
   const workerUrl = new URL(
-    "./search-worker.js?v=instant-search-20260717-r14",
+    "./search-worker.js?v=instant-search-20260730-r15",
     window.location.href
   );
   const workerUrlText = workerUrl.toString();

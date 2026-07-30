@@ -53,7 +53,7 @@ const CATEGORY_BLUNDER = 3;
 const LARGE_CANDIDATE_SORT_THRESHOLD = 3000;
 const MAX_COUNTER_REPLY_WORDS = 12;
 // Keep in sync with app.js and tools/build_search_index.py.
-const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨"]);
+const FORCED_ALTERNATIVE_ENDINGS = new Set(["값", "슨", "늬"]);
 // Parsed shards are much larger in memory than their JSON files. Bound the
 // cache and load broad requests in small batches to prevent browser OOMs.
 const SHARD_CACHE_MAX = 8;
@@ -1859,7 +1859,7 @@ function compareBlunderIndexGroup(left, right, exactWord, exactReading) {
   const leftOneShot = Number(leftEntry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
   const rightOneShot = Number(rightEntry[ENTRY_ONE_SHOT_REPLY_COUNT]) || 0;
   if (leftOneShot !== rightOneShot) {
-    return rightOneShot - leftOneShot;
+    return leftOneShot - rightOneShot;
   }
 
   return compareIndexReading(left, right);

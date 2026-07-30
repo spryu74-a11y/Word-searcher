@@ -23,7 +23,7 @@ IEUNG = 11
 IOTIZED_VOWELS = {2, 3, 6, 7, 12, 17, 20}
 # Endings that are always classified as 대체한방. Keep this in sync with the
 # browser app and packed search worker.
-FORCED_ALTERNATIVE_ENDINGS = {"값", "슨"}
+FORCED_ALTERNATIVE_ENDINGS = {"값", "슨", "늬"}
 
 
 def is_forced_alternative(entry: dict[str, object]) -> bool:

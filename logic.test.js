@@ -120,6 +120,13 @@ assert.ok(forcedSeun);
 assert.ok(forcedSeun.alternativeOneShot);
 assert.ok(!forcedSeun.oneShot);
 
+const forcedNeuiDictionary = logic.createDictionary(
+  ["무늬", "잎점무늬", "늬가"].join("\n")
+);
+const forcedNeuiEntries = forcedNeuiDictionary.entries.filter((entry) => entry.word.endsWith("늬"));
+assert.strictEqual(forcedNeuiEntries.length, 2);
+assert.ok(forcedNeuiEntries.every((entry) => entry.alternativeOneShot && !entry.oneShot));
+
 const reumEumDictionary = logic.createDictionary(["가름", "음죵"].join("\n"));
 const reumEumResult = logic.searchDictionary(reumEumDictionary, {
   query: "가",
@@ -190,6 +197,24 @@ assert.ok(normalPriority.results[normalPriority.results.length - 1].blunder);
 assert.strictEqual(
   normalPriority.results.findIndex((entry) => entry.oneShot),
   normalPriority.categoryCounts.connection + normalPriority.categoryCounts.alternativeOneShot
+);
+
+const blunderCountPriorityDictionary = logic.createDictionary(
+  ["가나", "나끝", "가름", "름끝", "음끝", "늠끝"].join("\n")
+);
+const blunderCountPriority = logic.searchDictionary(blunderCountPriorityDictionary, {
+  query: "가",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 20
+});
+assert.deepStrictEqual(
+  blunderCountPriority.results.filter((entry) => entry.blunder).map((entry) => entry.word),
+  ["가나", "가름"]
+);
+assert.deepStrictEqual(
+  blunderCountPriority.results.filter((entry) => entry.blunder).map((entry) => entry.oneShotReplyCount),
+  [1, 3]
 );
 
 const connectionFollowerPriorityDictionary = logic.createDictionary(

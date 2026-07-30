@@ -79,6 +79,17 @@ async function main() {
     const built = await request("buildDefault", { extraText: "" });
     assert.strictEqual(built.type, "built");
 
+    const forcedNeuiWords = ["\ubb34\ub2ac", "\uc78e\uc810\ubb34\ub2ac"];
+    for (const word of forcedNeuiWords) {
+      const forcedNeuiSearch = await request("search", {
+        options: searchOptions(word, [], 0)
+      });
+      const forcedNeuiEntry = forcedNeuiSearch.payload.results.find((entry) => entry.word === word);
+      assert.ok(forcedNeuiEntry, `${word} must be returned from the static dictionary pack`);
+      assert.strictEqual(forcedNeuiEntry.alternativeOneShot, true);
+      assert.strictEqual(forcedNeuiEntry.oneShot, false);
+    }
+
     const usedUnaffectedBlunder = await request("search", {
       options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕"], 3)
     });
@@ -92,7 +103,7 @@ async function main() {
       "an unaffected static blunder must not be downgraded to a connection"
     );
     assert.strictEqual(usedUnaffectedBlunderEntry.oneShotReplyCount, 0);
-    assert.strictEqual(usedUnaffectedBlunderEntry.alternativeOneShotReplyCount, 4);
+    assert.strictEqual(usedUnaffectedBlunderEntry.alternativeOneShotReplyCount, 8);
 
     const usedAffectedBlunder = await request("search", {
       options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕", "쥐꼬리톱"], 4)
@@ -195,8 +206,8 @@ async function main() {
       assert.ok(
         previous.alternativeOneShotReplyCount < current.alternativeOneShotReplyCount ||
           (previous.alternativeOneShotReplyCount === current.alternativeOneShotReplyCount &&
-            previous.oneShotReplyCount >= current.oneShotReplyCount),
-        "blunders must sort by fewer alternative counters, then more one-shot counters"
+            previous.oneShotReplyCount <= current.oneShotReplyCount),
+        "blunders must sort by fewer alternative counters, then fewer one-shot counters"
       );
     }
 
