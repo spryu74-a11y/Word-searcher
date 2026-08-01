@@ -1,6 +1,6 @@
 "use strict";
 
-const SEARCH_INDEX_VERSION = "search-index-v2-20260714-r1";
+const SEARCH_INDEX_VERSION = "search-index-v2-20260801-r2";
 const INDEX_MANIFEST_URL = `./data/search-index-manifest.json?v=${SEARCH_INDEX_VERSION}`;
 const INDEX_URL = `./data/search-index.json?v=${SEARCH_INDEX_VERSION}`;
 const SHARD_BASE_URL = "./data/search-index-shards/";

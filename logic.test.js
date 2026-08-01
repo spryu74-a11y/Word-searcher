@@ -121,11 +121,19 @@ assert.ok(forcedSeun.alternativeOneShot);
 assert.ok(!forcedSeun.oneShot);
 
 const forcedNeuiDictionary = logic.createDictionary(
-  ["무늬", "잎점무늬", "늬가"].join("\n")
+  ["깻잎", "무늬", "잎점무늬", "늬가"].join("\n")
 );
 const forcedNeuiEntries = forcedNeuiDictionary.entries.filter((entry) => entry.word.endsWith("늬"));
 assert.strictEqual(forcedNeuiEntries.length, 2);
 assert.ok(forcedNeuiEntries.every((entry) => entry.alternativeOneShot && !entry.oneShot));
+const leafEnding = logic.searchDictionary(forcedNeuiDictionary, {
+  query: "깻잎",
+  sourceMode: "starts",
+  oneShotOnly: false,
+  pageSize: 10
+}).results.find((entry) => entry.word === "깻잎");
+assert.ok(leafEnding.blunder);
+assert.deepStrictEqual(leafEnding.alternativeOneShotReplyWords, ["잎점무늬"]);
 
 const reumEumDictionary = logic.createDictionary(["가름", "음죵"].join("\n"));
 const reumEumResult = logic.searchDictionary(reumEumDictionary, {

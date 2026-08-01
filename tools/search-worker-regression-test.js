@@ -90,6 +90,20 @@ async function main() {
       assert.strictEqual(forcedNeuiEntry.oneShot, false);
     }
 
+    const leafEndingSearch = await request("search", {
+      options: searchOptions("\uae7b\uc78e", [], 0)
+    });
+    const leafEnding = leafEndingSearch.payload.results.find(
+      (entry) => entry.word === "\uae7b\uc78e"
+    );
+    assert.ok(leafEnding, "a word ending in 잎 must be returned from the static dictionary pack");
+    assert.strictEqual(
+      leafEnding.blunder,
+      true,
+      "a word ending in 잎 must be a blunder when 잎점무늬 is an alternative one-shot reply"
+    );
+    assert.ok(leafEnding.alternativeOneShotReplyWords.includes("\uc78e\uc810\ubb34\ub2ac"));
+
     const usedUnaffectedBlunder = await request("search", {
       options: searchOptions("\ubfcd\uc950", ["뿍뿍", "뿍덕"], 3)
     });
